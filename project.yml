@@ -1,0 +1,57 @@
+name: Eugenia
+options:
+  bundleIdPrefix: com.eugenia
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"          # ver README: se sube a 6 cuando el primer build esté verde
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: ""
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+
+targets:
+  Eugenia:
+    type: application
+    platform: iOS
+    sources:
+      - path: Eugenia
+    info:
+      path: Eugenia/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Eugenia
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIBackgroundModes:
+          - audio
+        NSMicrophoneUsageDescription:
+          Eugenia graba el audio de tus reuniones para transcribirlo y resumirlo. Todo
+          el procesamiento ocurre en este iPhone y el audio no sale del dispositivo.
+        NSSpeechRecognitionUsageDescription:
+          La transcripción se hace en el dispositivo con los modelos de voz de iOS.
+        # Solo Debug: expone Documents/ por AFC para el banco de pruebas (plan 6.5).
+        # En Release vale NO y la carpeta no es accesible ni por Archivos ni por AFC.
+        UIFileSharingEnabled: $(EUGENIA_FILE_SHARING)
+        LSSupportsOpeningDocumentsInPlace: $(EUGENIA_FILE_SHARING)
+    entitlements:
+      path: Eugenia/Resources/Eugenia.entitlements
+      properties: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.eugenia.app
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"
+      configs:
+        Debug:
+          EUGENIA_FILE_SHARING: "YES"
+          OTHER_SWIFT_FLAGS: "-D DEBUG"
+        Release:
+          EUGENIA_FILE_SHARING: "NO"

@@ -1,0 +1,10 @@
+Eugenia.xcodeproj/
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+Payload/
+run/
+.DS_Store
+__pycache__/
+*.pyc

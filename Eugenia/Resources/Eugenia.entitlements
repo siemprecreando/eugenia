@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  INTENCIONADAMENTE VACÍO. Ver plan, secciones 6.2 y 6.4.
+
+	  La firma con Apple ID gratuito NO admite entitlements de pago. Si aquí aparece
+	  cualquiera de estas claves, la instalación falla en el teléfono (no al compilar,
+	  que es lo que lo hace confuso):
+
+	      com.apple.developer.icloud-services          (CloudKit / iCloud)
+	      com.apple.security.application-groups        (App Groups, widgets con datos)
+	      aps-environment                              (notificaciones push / APNs)
+
+	  scripts/check-entitlements.py lo comprueba en cada build de CI.
+	  Las notificaciones LOCALES no necesitan entitlement y sí se pueden usar.
+	-->
+</dict>
+</plist>

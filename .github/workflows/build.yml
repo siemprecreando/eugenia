@@ -1,0 +1,91 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Repositorio PRIVADO: los minutos de macOS cuentan x10 contra los 2.000 del plan
+# Free, o sea ~200 min reales al mes (plan 6.3). Por eso no se compila en cada push
+# de cualquier rama. En repositorio público esto es gratis e ilimitado y se puede
+# ampliar el disparador sin pensarlo.
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Falla ANTES de compilar si se ha colado un entitlement que la firma
+      # gratuita no admite. Sin esto el fallo aparece al instalar en el teléfono,
+      # que es tarde y confuso (plan 6.2).
+      - name: Comprobar entitlements
+        run: python3 scripts/check-entitlements.py
+
+      - name: Instalar XcodeGen
+        run: brew install xcodegen
+
+      - name: Generar el proyecto
+        run: xcodegen generate
+
+      - name: Cache de DerivedData
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: dd-${{ runner.os }}-${{ hashFiles('project.yml', 'Eugenia/**/*.swift') }}
+          restore-keys: dd-${{ runner.os }}-
+
+      - name: Compilar sin firmar
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Eugenia.xcodeproj \
+            -scheme Eugenia \
+            -configuration Debug \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Empaquetar el .ipa
+        run: |
+          APP="build/Build/Products/Debug-iphoneos/Eugenia.app"
+          test -d "$APP" || { echo "No se generó $APP"; exit 1; }
+          # El commit viaja dentro de la app: el informe de diagnóstico lo incluye,
+          # así que un fallo siempre se puede atribuir a una versión concreta.
+          /usr/libexec/PlistBuddy -c "Add :EugeniaCommit string ${GITHUB_SHA}" "$APP/Info.plist" || \
+          /usr/libexec/PlistBuddy -c "Set :EugeniaCommit ${GITHUB_SHA}" "$APP/Info.plist"
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry Eugenia.ipa Payload
+          ls -lh Eugenia.ipa
+
+      # Sin el dSYM no se pueden simbolicar los crashes desde Linux (plan 6.5).
+      - name: Empaquetar el dSYM
+        run: |
+          DSYM="build/Build/Products/Debug-iphoneos/Eugenia.app.dSYM"
+          if [ -d "$DSYM" ]; then zip -qry Eugenia.dSYM.zip "$DSYM"; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eugenia-${{ github.sha }}
+          path: |
+            Eugenia.ipa
+            Eugenia.dSYM.zip
+          if-no-files-found: error
+
+      - name: Publicar Release (solo en tags)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Eugenia.ipa
+            Eugenia.dSYM.zip

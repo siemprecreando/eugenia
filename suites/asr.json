@@ -1,0 +1,29 @@
+{
+  "suite": "asr",
+  "cases": [
+    {
+      "id": "asr/es/sala-4personas-2m",
+      "audioFile": "es-sala-4personas-2m.m4a",
+      "language": "es",
+      "referenceTranscript": null,
+      "kind": "asr",
+      "expected": { "durationMs": { "max": 180000 } }
+    },
+    {
+      "id": "asr/en/sala-4personas-2m",
+      "audioFile": "en-sala-4personas-2m.m4a",
+      "language": "en",
+      "referenceTranscript": null,
+      "kind": "asr",
+      "expected": { "durationMs": { "max": 180000 } }
+    },
+    {
+      "id": "pipeline/es/reunion-60min",
+      "audioFile": "es-reunion-60min.m4a",
+      "language": "es",
+      "referenceTranscript": null,
+      "kind": "pipeline",
+      "expected": { "summaryMs": { "max": 90000 }, "peakMemoryMB": { "max": 900 } }
+    }
+  ]
+}
