@@ -126,15 +126,21 @@ jobs:
           print("\nEl bucle Linux->app->informe funciona.")
           PY
 
-      # El simulador de iOS 26 sobre Apple Silicon expone FoundationModels usando el
-      # Apple Intelligence del Mac anfitrión, así que el resumen SÍ se puede ejercitar
-      # aquí. Eso permite medir el map-reduce y la resolución temporal (plan 5.4.4,
-      # spike 4b) sin el teléfono. Lo que sigue necesitando dispositivo es la calidad
-      # acústica y las métricas de batería, térmica y memoria bajo carga real.
+      # MEDIDO, NO SUPUESTO: en los runners de GitHub el modelo NO está disponible de
+      # forma fiable. Dos ejecuciones seguidas dieron:
+      #     run 34304939735 -> llm=available
+      #     run 34305455877 -> llm=unavailable(modelNotReady)
+      # Apple Intelligence no está provisionado en la imagen, y `.available` llegó a
+      # aparecer antes de que el modelo estuviera listo. O sea que ese `.available`
+      # era engañoso, no una buena noticia.
       #
-      # Va en un paso aparte del humo a propósito: si el modelo no está disponible en
-      # el runner, quiero ver "skipped" en este y no confundirlo con el bucle roto.
-      - name: Resumen con el LLM — contexto cruzado temporal
+      # Consecuencia: este paso normalmente se SALTA, y así debe ser. Se queda por dos
+      # motivos: si algún día la imagen trae el modelo, esto lo detecta solo; y la
+      # misma suite (suites/llm.json) es la que se lanza contra el iPhone con
+      # `./scripts/devtest.sh llm`, donde el 17e sí tiene Apple Intelligence.
+      #
+      # El spike 4b del plan se mide en el teléfono. Aquí solo se intenta.
+      - name: Resumen con el LLM — contexto cruzado temporal (oportunista)
         id: llm
         continue-on-error: true
         run: |
