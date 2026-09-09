@@ -23,6 +23,115 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Todo lo que se puede comprobar SIN el iPhone. No sustituye al dispositivo —el
+  # simulador no tiene Neural Engine, ni FoundationModels, ni modelos de voz reales—
+  # pero sí caza lo que hoy es el riesgo número uno: que la app reviente al arrancar
+  # o que la lógica pura esté mal. Plan, sección 6.5.
+  test:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar XcodeGen
+        run: brew install xcodegen
+
+      - name: Generar el proyecto
+        run: xcodegen generate
+
+      - name: Elegir simulador
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          devices = json.load(sys.stdin)['devices']
+          best = None
+          for runtime, devs in devices.items():
+              if 'iOS' not in runtime:
+                  continue
+              for dev in devs:
+                  if dev.get('isAvailable') and 'iPhone' in dev['name']:
+                      best = (dev['udid'], dev['name'], runtime)
+          if not best:
+              raise SystemExit('No hay ningún simulador de iPhone disponible')
+          print(best[0])
+          import sys as s2
+          print(f'{best[1]} · {best[2]}', file=s2.stderr)
+          ")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "simulador: $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+
+      - name: Pruebas unitarias
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Eugenia.xcodeproj \
+            -scheme Eugenia \
+            -configuration Debug \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      # Esto es el bucle de la sección 6.5 en seco: se empuja el plan de pruebas al
+      # contenedor de la app, se lanza, y se recoge el informe. El contenedor de un
+      # simulador es un directorio normal, así que hace de AFC. Si esto pasa, sabemos
+      # que el DiagnosticsRunner arranca, escribe y serializa bien — que es la mitad
+      # del spike 8, resuelta sin tocar el teléfono.
+      - name: Bucle de diagnóstico contra el simulador
+        run: |
+          UDID="${{ steps.sim.outputs.udid }}"
+          APP="build/Build/Products/Debug-iphonesimulator/Eugenia.app"
+          test -d "$APP" || { echo "No se generó $APP"; exit 1; }
+
+          xcrun simctl install "$UDID" "$APP"
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" com.eugenia.app data)
+          echo "contenedor: $CONTAINER"
+
+          mkdir -p "$CONTAINER/Documents/diagnostics"
+          cp suites/smoke.json "$CONTAINER/Documents/diagnostics/run.json"
+
+          xcrun simctl launch "$UDID" com.eugenia.app
+
+          REPORT=""
+          for i in $(seq 1 40); do
+            REPORT=$(find "$CONTAINER/Documents/diagnostics" -name "report-*.json" | head -1)
+            [ -n "$REPORT" ] && break
+            sleep 2
+          done
+
+          if [ -z "$REPORT" ]; then
+            echo "La app no escribió ningún informe en 80 s."
+            echo "--- log del simulador ---"
+            xcrun simctl spawn "$UDID" log show --last 2m --predicate 'subsystem == "com.eugenia.app"' --style compact || true
+            echo "--- crashes ---"
+            ls -la ~/Library/Logs/DiagnosticReports/ 2>/dev/null | head -20 || true
+            exit 1
+          fi
+
+          echo "--- informe ---"
+          cat "$REPORT"
+          python3 - "$REPORT" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          print()
+          print("dispositivo:", d["run"]["device"], "· iOS", d["run"]["os"])
+          print("IA:", d["env"]["modelAvailability"], "(en simulador se espera 'unavailable')")
+          for c in d["cases"]:
+              print(f"  [{c['status']}] {c['id']} — {c.get('message') or ''}")
+          if d["summary"]["failed"]:
+              raise SystemExit(f"{d['summary']['failed']} caso(s) fallidos")
+          print("\nEl bucle Linux->app->informe funciona.")
+          PY
+
+      - name: Traza estructurada de la app
+        if: always()
+        run: |
+          xcrun simctl spawn "${{ steps.sim.outputs.udid }}" log show --last 5m \
+            --predicate 'subsystem == "com.eugenia.app"' --style compact || true
+
   ipa:
     # macos-26, NO macos-15. El primer intento falló con "no such module
     # 'FoundationModels'": la imagen macos-15 trae un Xcode cuyo SDK es iOS 18, y

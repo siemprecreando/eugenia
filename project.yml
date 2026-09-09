@@ -15,6 +15,16 @@ settings:
     CODE_SIGN_IDENTITY: ""
     IPHONEOS_DEPLOYMENT_TARGET: "26.0"
 
+schemes:
+  Eugenia:
+    build:
+      targets:
+        Eugenia: all
+        EugeniaTests: [test]
+    test:
+      targets: [EugeniaTests]
+      gatherCoverageData: false
+
 targets:
   Eugenia:
     type: application
@@ -59,3 +69,18 @@ targets:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
         Release:
           EUGENIA_FILE_SHARING: "NO"
+
+  # Pruebas unitarias de la lógica pura. Corren en el SIMULADOR, sin teléfono y sin
+  # Apple Intelligence, y cubren lo que no depende del hardware: el cálculo de WER,
+  # el troceado del map-reduce, el contrato JSON con devtest.sh y la persistencia.
+  EugeniaTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Eugenia
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.eugenia.app.tests
+        GENERATE_INFOPLIST_FILE: YES

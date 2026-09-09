@@ -156,7 +156,9 @@ struct Summarizer {
         return response.content
     }
 
-    private static func split(_ text: String) -> [String] {
+    /// Internal, no private: el troceado decide cuántas llamadas al LLM se hacen y
+    /// dónde se parte una idea. Es lógica pura y merece prueba unitaria.
+    static func split(_ text: String) -> [String] {
         guard text.count > chunkChars else { return text.isEmpty ? [] : [text] }
         var out: [String] = []
         var current = ""
