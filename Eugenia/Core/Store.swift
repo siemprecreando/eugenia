@@ -127,3 +127,97 @@ final class Store: ObservableObject {
         return Int(bytes / 1_048_576)
     }
 }
+
+#if DEBUG
+extension Store {
+    /// Datos de muestra para las capturas y las pruebas de interfaz (`--ui-demo`).
+    ///
+    /// Rellena la lista EN MEMORIA y no llama a `persist()`: nada de esto toca el
+    /// disco ni sobrevive al cierre de la app. Si algún día esto escribiera, una
+    /// build de depuración contaminaría el índice real del teléfono.
+    func seedDemo() {
+        notes = Note.demoSet
+        Log.event(Log.storage, "demo.seed", "notes=\(notes.count)")
+    }
+}
+
+extension Note {
+    /// La reunión larga es la del spike 4b del plan: el presupuesto se asigna a
+    /// Marta, se reasigna a Javier y acaba aparcado. Sirve para ver de un vistazo
+    /// si la pantalla de detalle sabe enseñar un acuerdo que cambió de dueño.
+    static var demoSet: [Note] {
+        let now = Date()
+        return [
+            Note(
+                id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+                title: "Comité de producto",
+                createdAt: now.addingTimeInterval(-3_600),
+                duration: 2_940,
+                language: "es",
+                audioFileName: nil,
+                transcript: """
+                Javier: Antes de nada, el presupuesto del trimestre. Marta, ¿lo llevas tú?
+                Marta: Lo puedo llevar, pero necesito los números de soporte.
+                Javier: Vale, pues lo cierras tú y lo vemos el viernes.
+                […]
+                Marta: Sinceramente, con la migración encima no voy a llegar. ¿Lo coges tú?
+                Javier: Está bien, me lo quedo yo.
+                […]
+                Javier: Pensándolo mejor, hasta que no cerremos la migración esto no se
+                toca. Lo dejamos aparcado y lo retomamos en dos semanas.
+                """,
+                summaryOverview: """
+                Revisión del trimestre. El presupuesto cambió de responsable durante la \
+                reunión y terminó aparcado hasta cerrar la migración. Se confirmaron dos \
+                compromisos con fecha.
+                """,
+                decisions: [
+                    "El presupuesto queda aparcado hasta que termine la migración (dos semanas).",
+                    "La migración pasa a ser la prioridad única del equipo."
+                ],
+                actionItems: [
+                    StoredActionItem(text: "Cerrar el presupuesto del trimestre",
+                                     assignee: "Javier", status: "aparcado", atSeconds: 58),
+                    StoredActionItem(text: "Pasar los números de soporte",
+                                     assignee: "Marta", status: "pendiente", atSeconds: 12),
+                    StoredActionItem(text: "Plan de migración con fechas",
+                                     assignee: "Javier", status: "pendiente", atSeconds: 41)
+                ],
+                state: "summarized",
+                failure: nil
+            ),
+            Note(
+                id: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
+                title: "1:1 con Marta",
+                createdAt: now.addingTimeInterval(-90_000),
+                duration: 1_500,
+                language: "es",
+                audioFileName: nil,
+                transcript: "…",
+                summaryOverview: "Seguimiento quincenal. Carga de trabajo alta por la migración.",
+                decisions: [],
+                actionItems: [
+                    StoredActionItem(text: "Repartir las guardias de la semana que viene",
+                                     assignee: "Marta", status: "pendiente", atSeconds: 320)
+                ],
+                state: "summarized",
+                failure: nil
+            ),
+            Note(
+                id: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
+                title: "Llamada con proveedor",
+                createdAt: now.addingTimeInterval(-260_000),
+                duration: 720,
+                language: "es",
+                audioFileName: nil,
+                transcript: "",
+                summaryOverview: "",
+                decisions: [],
+                actionItems: [],
+                state: "transcribed",
+                failure: nil
+            )
+        ]
+    }
+}
+#endif

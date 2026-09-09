@@ -52,6 +52,7 @@ struct RecordView: View {
                     .frame(maxWidth: .infinity).padding(.vertical, 12)
             }
             .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("record-toggle")
             .padding(.horizontal)
         }
         .padding(.vertical, 32)

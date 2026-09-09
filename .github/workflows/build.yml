@@ -72,6 +72,7 @@ jobs:
             -configuration Debug \
             -destination "id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath build \
+            -only-testing:EugeniaTests \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO
 
@@ -125,6 +126,82 @@ jobs:
               raise SystemExit(f"{d['summary']['failed']} caso(s) fallidos")
           print("\nEl bucle Linux->app->informe funciona.")
           PY
+
+      # Pruebas de interfaz + CAPTURAS. Arrancan la app, la pulsan y navegan. Cubren el
+      # hueco entre "compila" y "se puede usar": un @EnvironmentObject que falta compila
+      # perfectamente y tira la app en el primer render.
+      #
+      # Las capturas salen como adjuntos del .xcresult y se publican como artefacto, que
+      # es la única manera de ver la interfaz sin un Mac y sin el iPhone.
+      - name: Pruebas de interfaz y capturas
+        id: ui
+        run: |
+          set -o pipefail
+          rm -rf ui.xcresult capturas
+          xcodebuild test \
+            -project Eugenia.xcodeproj \
+            -scheme Eugenia \
+            -configuration Debug \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build \
+            -only-testing:EugeniaUITests \
+            -resultBundlePath ui.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      # Se extraen SIEMPRE, también si la prueba falló: cuando falla, la captura del
+      # momento del fallo es justo lo que hace falta para entenderlo desde Linux.
+      - name: Extraer las capturas
+        if: always()
+        run: |
+          [ -d ui.xcresult ] || { echo "no hay .xcresult"; exit 0; }
+          mkdir -p capturas
+          xcrun xcresulttool export attachments \
+            --path ui.xcresult --output-path capturas >/dev/null 2>&1 || \
+            echo "xcresulttool export attachments no funcionó; se pasa al plan B"
+
+          python3 - <<'PYEOF'
+          import json, pathlib, shutil
+          out = pathlib.Path("capturas")
+          manifest = out / "manifest.json"
+          renombradas = 0
+          if manifest.exists():
+              data = json.loads(manifest.read_text())
+              for entrada in (data if isinstance(data, list) else [data]):
+                  for att in entrada.get("attachments", []):
+                      origen = out / att.get("exportedFileName", "")
+                      nombre = att.get("suggestedHumanReadableName") or origen.name
+                      if origen.exists() and origen.name != nombre:
+                          shutil.move(str(origen), str(out / nombre))
+                          renombradas += 1
+              manifest.unlink()
+          print(f"capturas renombradas: {renombradas}")
+          PYEOF
+
+          # Plan B: si el exportador no dejó nada, se rastrean los PNG dentro del
+          # bundle por su cabecera. Se pierden los nombres, pero se ve la app.
+          if [ -z "$(ls -A capturas 2>/dev/null)" ]; then
+            i=0
+            while IFS= read -r f; do
+              if [ "$(head -c 8 "$f" | xxd -p)" = "89504e470d0a1a0a" ]; then
+                i=$((i+1)); cp "$f" "capturas/captura-$i.png"
+              fi
+            done < <(find ui.xcresult -type f)
+            echo "plan B: $i PNG recuperados del bundle"
+          fi
+
+          echo "--- capturas ---"
+          ls -la capturas
+          # Si no hay ni una, algo se rompió en la cadena y hay que enterarse.
+          test -n "$(ls -A capturas)" || { echo "No se recuperó ninguna captura"; exit 1; }
+
+      - name: Publicar las capturas
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capturas-${{ github.sha }}
+          path: capturas
+          if-no-files-found: warn
 
       # MEDIDO, NO SUPUESTO: en los runners de GitHub el modelo NO está disponible de
       # forma fiable. Dos ejecuciones seguidas dieron:

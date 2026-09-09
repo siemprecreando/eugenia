@@ -21,8 +21,9 @@ schemes:
       targets:
         Eugenia: all
         EugeniaTests: [test]
+        EugeniaUITests: [test]
     test:
-      targets: [EugeniaTests]
+      targets: [EugeniaTests, EugeniaUITests]
       gatherCoverageData: false
 
 targets:
@@ -84,3 +85,19 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.eugenia.app.tests
         GENERATE_INFOPLIST_FILE: YES
+
+  # Pruebas de INTERFAZ. Arrancan la app de verdad en el simulador, la pulsan y dejan
+  # capturas como adjuntos del resultado. Cubren el hueco entre "compila" y "se puede
+  # usar", y son la única forma de ver la app sin un Mac y sin el iPhone.
+  EugeniaUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: Eugenia
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.eugenia.app.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Eugenia

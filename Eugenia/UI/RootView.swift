@@ -20,6 +20,7 @@ struct RootView: View {
                             NavigationLink(value: note.id) {
                                 NoteRow(note: note)
                             }
+                            .accessibilityIdentifier("note-\(note.title)")
                         }
                         .onDelete { indexes in
                             indexes.map { store.notes[$0] }.forEach(store.delete)
@@ -43,6 +44,7 @@ struct RootView: View {
                         .padding(.vertical, 14)
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("record-button")
                 .padding()
                 .background(.bar)
             }
