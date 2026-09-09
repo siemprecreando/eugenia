@@ -135,19 +135,66 @@ CI corre en `macos-26` con simulador. Esto es lo medido, no lo supuesto:
 | Que la app compile y produzca un `.ipa` arm64 con dSYM | ✅ en cada push |
 | Pruebas unitarias: WER, troceado, contrato JSON, persistencia, backlog | ✅ 5 suites |
 | Que la app **arranque** sin reventar | ✅ en el simulador |
+| Que la app **se pueda usar**: lista, detalle, grabación | ✅ 3 pruebas de interfaz |
+| **Ver la interfaz** desde Linux | ✅ capturas publicadas como artefacto |
 | El bucle completo: empujar plan → lanzar → recoger informe | ✅ el contenedor del simulador hace de AFC |
 | La traza `os_log` con `%{public}s` | ✅ legible desde fuera |
 | **El resumen con `FoundationModels`** | ❌ **no fiable en CI** |
 | ASR, diarización, micrófono, batería, térmica, jetsam | ❌ solo en el dispositivo |
+
+### Ver la app sin el teléfono
+
+`EugeniaUITests` arranca la app en el simulador, navega y deja capturas que CI publica
+como artefacto `capturas-<sha>`. Se bajan con:
+
+    gh run download <run-id> -n capturas-<sha> -D dist/capturas
+
+Cubre el hueco entre *compila* y *se puede usar*: un `@EnvironmentObject` que falta
+compila perfectamente y tira la app en el primer render. Lo que **no** cubre: audio,
+transcripción y resumen. Eso es el teléfono.
+
+Los datos de muestra (`--ui-demo`) viven en memoria y no tocan el disco. La reunión
+larga es la del spike 4b, para que la captura del detalle enseñe si la pantalla sabe
+representar un acuerdo que cambió de dueño.
+
+### Lo que encontraron las capturas
+
+Tres fallos que un build verde no ve, todos del run `34375999617`:
+
+1. **El idioma del bundle (serio).** El `.ipa` publicado llevaba
+   `CFBundleDevelopmentRegion: en` y ninguna localización. `Locale.current` se resuelve
+   contra las localizaciones del Info.plist, **no** contra Ajustes: en un iPhone en
+   español la app habría pedido el modelo de voz **inglés** para una reunión en español.
+   Transcripción ilegible y sin ningún error visible. El síntoma que lo delató era
+   cosmético —fechas en inglés en una interfaz en español— y el error de la captura de
+   grabación decía `not subscribed to transcription.en`.
+   Arreglado con dos candados independientes: el Info.plist declara `es`/`en`, y
+   `Recorder.languageCode(preferred:)` decide con `Locale.preferredLanguages`, que no
+   depende del bundle. Cubierto por `LanguageTests`.
+2. **El volcado del `NSError` en pantalla.** La pantalla de grabación enseñaba
+   `Error Domain=SFSpeechErrorDomain Code=1 ... UserInfo={...}`. Ahora una frase legible
+   con el dato técnico entre paréntesis; el crudo va al log y al informe. La prueba de
+   interfaz falla si vuelve a aparecer un `Error Domain=` en pantalla.
+3. **La insignia de IA congelada.** Se leía dentro de `body`, así que SwiftUI no tenía
+   ninguna dependencia que invalidar y se quedaba con el primer valor para siempre.
+   Se reevalúa al volver a primer plano.
 
 **Sobre el LLM en CI, porque la primera lectura fue engañosa.** Un build reportó
 `llm=available` y el siguiente `llm=unavailable(modelNotReady)`. Apple Intelligence no
 está provisionado en los runners de GitHub, y el `.available` apareció antes de que el
 modelo estuviera listo — no era una buena noticia, era un valor prematuro.
 
+Y en el run `34376954716` quedó demostrado del todo: `llm=available`, la llamada
+lanzada, y la generación falló con
+
+    FoundationModels.LanguageModelSession.GenerationError Code=-1
+      └─ ModelManagerServices.ModelManagerError Code=1026
+
 Eso deja una lección para el producto, no solo para CI: **`availability` puede decir
 `.available` y la llamada fallar igualmente**. La comprobación no puede hacerse una vez
-al arrancar y darse por buena.
+al arrancar y darse por buena — hay que tratar el error de la llamada, que es lo que
+hace `Recorder.summarize`. Y por eso el usuario debe saber siempre que **la
+transcripción está guardada aunque el resumen falle**.
 
 La suite `suites/llm.json` se queda: lleva el spike 4b del plan —el presupuesto que se
 asigna a Marta, se reasigna a Javier y se aparca— y se lanza contra el iPhone con
