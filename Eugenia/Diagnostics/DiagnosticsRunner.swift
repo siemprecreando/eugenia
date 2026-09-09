@@ -246,7 +246,12 @@ enum DiagnosticsRunner {
     // MARK: - Utilidades
 
     /// WER clásico por distancia de edición sobre palabras.
-    static func wer(reference: String, hypothesis: String) -> Double {
+    ///
+    /// `nonisolated` porque es una función PURA: entra texto, sale un número, no toca
+    /// estado ni interfaz. Heredaba el @MainActor del enum sin ninguna razón, y eso
+    /// la hacía imposible de probar desde un test síncrono — además de obligar a un
+    /// salto al hilo principal por cada caso, en mitad de una medición de tiempos.
+    nonisolated static func wer(reference: String, hypothesis: String) -> Double {
         let r = normalize(reference), h = normalize(hypothesis)
         guard !r.isEmpty else { return h.isEmpty ? 0 : 1 }
         var prev = Array(0...h.count)
@@ -262,7 +267,7 @@ enum DiagnosticsRunner {
         return Double(prev[h.count]) / Double(r.count)
     }
 
-    private static func normalize(_ s: String) -> [String] {
+    nonisolated private static func normalize(_ s: String) -> [String] {
         s.lowercased()
             .folding(options: .diacriticInsensitive, locale: Locale(identifier: "es"))
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
