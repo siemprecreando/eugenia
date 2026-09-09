@@ -24,10 +24,24 @@ concurrency:
 
 jobs:
   ipa:
-    runs-on: macos-15
+    # macos-26, NO macos-15. El primer intento falló con "no such module
+    # 'FoundationModels'": la imagen macos-15 trae un Xcode cuyo SDK es iOS 18, y
+    # FoundationModels y SpeechAnalyzer solo existen a partir del SDK de iOS 26.
+    # macos-26 (GA desde febrero de 2026, Apple M4) trae Xcode 26.4.1 por defecto.
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      # Diagnóstico barato que se queda para siempre: cuando un build falle por el
+      # SDK, esta salida dice en dos segundos si el problema es la imagen o el código.
+      - name: Xcode y SDKs disponibles
+        run: |
+          xcodebuild -version
+          echo "---"
+          ls /Applications | grep -i '^Xcode' || true
+          echo "---"
+          xcodebuild -showsdks | grep -iE 'ios|simulator' || true
 
       # Falla ANTES de compilar si se ha colado un entitlement que la firma
       # gratuita no admite. Sin esto el fallo aparece al instalar en el teléfono,
