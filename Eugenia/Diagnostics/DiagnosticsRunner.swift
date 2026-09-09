@@ -254,6 +254,15 @@ enum DiagnosticsRunner {
     nonisolated static func wer(reference: String, hypothesis: String) -> Double {
         let r = normalize(reference), h = normalize(hypothesis)
         guard !r.isEmpty else { return h.isEmpty ? 0 : 1 }
+        // CRASH que encontró la prueba: con la hipótesis vacía, el bucle de abajo
+        // hacía `for j in 1...0`, o sea un rango invertido, y eso es un fatal error
+        // que se lleva la app por delante.
+        //
+        // Y no era un caso de laboratorio: la hipótesis vacía es exactamente lo que
+        // devuelve el transcriptor cuando el ASR falla o el audio está en silencio.
+        // Es decir, el banco de pruebas petaba justo en el fallo que existe para
+        // medir. Sin transcripción, todo son borrados: el WER es 1.
+        guard !h.isEmpty else { return 1 }
         var prev = Array(0...h.count)
         var cur = [Int](repeating: 0, count: h.count + 1)
         for i in 1...r.count {

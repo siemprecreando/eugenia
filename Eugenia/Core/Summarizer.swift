@@ -160,17 +160,37 @@ struct Summarizer {
     /// dónde se parte una idea. Es lógica pura y merece prueba unitaria.
     static func split(_ text: String) -> [String] {
         guard text.count > chunkChars else { return text.isEmpty ? [] : [text] }
+
+        // La versión anterior hacía split(separator: ".") y le volvía a pegar un "."
+        // a cada trozo. Eso INVENTA caracteres: en un texto que acaba en punto, el
+        // último trozo es la cola vacía y se le añadía un "." de la nada. La prueba
+        // lo cazó con un carácter de diferencia sobre 6.600.
+        //
+        // Parece cosmético y no lo es: lo que sale de aquí es literalmente lo que se
+        // le manda al modelo. Un troceador que altera el texto es un troceador en el
+        // que no se puede confiar cuando el resumen salga raro.
+        //
+        // Ahora el separador viaja dentro de la frase y no se reconstruye nada.
         var out: [String] = []
         var current = ""
-        // Trocea por frases para no partir una idea por la mitad.
-        for sentence in text.split(separator: ".", omittingEmptySubsequences: false) {
-            let piece = String(sentence) + "."
-            if current.count + piece.count > chunkChars, !current.isEmpty {
+        var sentence = ""
+
+        func flush() {
+            guard !sentence.isEmpty else { return }
+            if current.count + sentence.count > chunkChars, !current.isEmpty {
                 out.append(current)
                 current = ""
             }
-            current += piece
+            current += sentence
+            sentence = ""
         }
+
+        for character in text {
+            sentence.append(character)
+            if character == "." { flush() }
+        }
+        flush()   // la cola sin punto final
+
         if !current.isEmpty { out.append(current) }
         return out
     }
