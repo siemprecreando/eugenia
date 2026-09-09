@@ -33,8 +33,47 @@ final class Recorder: ObservableObject {
     private var currentNote: Note?
     private var finals: [String] = []
 
-    let language: String = Locale.current.language.languageCode?.identifier == "en" ? "en" : "es"
+    let language: String = Recorder.languageCode(preferred: Locale.preferredLanguages)
     private var locale: Locale { Locale(identifier: language == "en" ? "en-US" : "es-ES") }
+
+    /// Se decide con `Locale.preferredLanguages` —lo que el usuario tiene en Ajustes—
+    /// y NO con `Locale.current`, que viene filtrado por las localizaciones del bundle
+    /// y devolvía `en` en un teléfono en español. Elegir mal aquí no degrada nada: la
+    /// transcripción sale ilegible porque el modelo es de otro idioma.
+    ///
+    /// El Info.plist ya declara `es`, pero esto no depende de ello a propósito: son dos
+    /// candados distintos para el mismo fallo.
+    nonisolated static func languageCode(preferred: [String]) -> String {
+        for etiqueta in preferred {
+            guard let codigo = Locale(identifier: etiqueta).language.languageCode?.identifier else { continue }
+            if codigo == "es" { return "es" }
+            if codigo == "en" { return "en" }
+        }
+        return "es"
+    }
+
+    /// Lo que ve el usuario cuando algo falla. El `NSError` crudo va al log, no a la
+    /// pantalla: la captura 05 enseñaba un muro rojo con "Error Domain=SFSpeechError
+    /// Domain Code=1 ... not subscribed to transcription.en", que no le dice a nadie
+    /// qué ha pasado ni qué hacer. El detalle técnico se conserva entre paréntesis
+    /// porque en el teléfono no hay depurador y a veces es lo único que hay.
+    nonisolated static func userMessage(for error: Error) -> String {
+        if let audio = error as? AudioSourceError {
+            return "No se pudo abrir el micrófono. (\(audio.description))"
+        }
+        let ns = error as NSError
+        let detalle = "\(ns.domain) \(ns.code)"
+        switch ns.domain {
+        case "SFSpeechErrorDomain":
+            return "No se pudo preparar el modelo de voz. Puede seguir descargándose; "
+                 + "vuelve a intentarlo en un momento. (\(detalle))"
+        case NSOSStatusErrorDomain, "com.apple.coreaudio.avfaudio":
+            return "El audio no está disponible ahora mismo. Cierra otras apps que estén "
+                 + "usando el micrófono e inténtalo otra vez. (\(detalle))"
+        default:
+            return "No se pudo empezar a grabar. (\(detalle))"
+        }
+    }
 
     // MARK: - Ciclo de grabación
 
@@ -147,9 +186,9 @@ final class Recorder: ObservableObject {
         } catch {
             Log.failure(Log.capture, "record.start", error)
             note.state = "failed"
-            note.failure = String(describing: error)
+            note.failure = String(describing: error)   // el crudo, para el informe
             Store.shared.save(note)
-            state = .failed(String(describing: error))
+            state = .failed(Self.userMessage(for: error))   // el legible, para la pantalla
         }
     }
 
@@ -194,7 +233,11 @@ final class Recorder: ObservableObject {
             note.state = "failed"
             note.failure = "LLM no disponible: \(Summarizer.availabilityDescription())"
             Store.shared.save(note)
-            state = .failed(note.failure ?? "")
+            // La transcripción SÍ está guardada: eso es lo que hay que decirle al
+            // usuario, porque determina si ha perdido la reunión o no.
+            state = .failed("La transcripción está guardada, pero el resumen no se pudo "
+                          + "generar: el modelo de IA no está disponible. "
+                          + "(\(Summarizer.availabilityDescription()))")
             return
         }
         do {
@@ -210,9 +253,9 @@ final class Recorder: ObservableObject {
         } catch {
             Log.failure(Log.summarize, "summarize", error)
             note.state = "failed"
-            note.failure = String(describing: error)
+            note.failure = String(describing: error)   // el crudo, para el informe
             Store.shared.save(note)
-            state = .failed(String(describing: error))
+            state = .failed(Self.userMessage(for: error))   // el legible, para la pantalla
         }
     }
 

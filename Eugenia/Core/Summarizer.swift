@@ -65,6 +65,20 @@ struct Summarizer {
         }
     }
 
+    /// Las dos cosas de UNA sola lectura. Preguntarlo dos veces puede dar dos
+    /// respuestas distintas, y entonces la insignia y el texto de accesibilidad se
+    /// contradicen.
+    static func availabilitySnapshot() -> (disponible: Bool, descripcion: String) {
+        switch SystemLanguageModel.default.availability {
+        case .available:
+            return (true, "available")
+        case .unavailable(let reason):
+            return (false, "unavailable(\(String(describing: reason)))")
+        @unknown default:
+            return (false, "unknown")
+        }
+    }
+
     static var isAvailable: Bool {
         if case .available = SystemLanguageModel.default.availability { return true }
         return false

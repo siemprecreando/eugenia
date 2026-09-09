@@ -149,3 +149,44 @@ final class BacklogTests: XCTestCase {
         XCTAssertEqual(backlog.decrement(), 0)
     }
 }
+
+/// El idioma con el que se pide el modelo de voz. Esto no es una preferencia estética:
+/// pedir el modelo equivocado devuelve una transcripción ilegible, y el fallo es mudo.
+///
+/// La versión anterior usaba `Locale.current`, que viene filtrado por las
+/// localizaciones que declara el bundle y devolvía "en" en un iPhone en español.
+final class LanguageTests: XCTestCase {
+
+    func testTelefonoEnEspanol() {
+        XCTAssertEqual(Recorder.languageCode(preferred: ["es-ES", "en-US"]), "es")
+        XCTAssertEqual(Recorder.languageCode(preferred: ["es-419"]), "es")
+        XCTAssertEqual(Recorder.languageCode(preferred: ["es"]), "es")
+    }
+
+    func testTelefonoEnIngles() {
+        XCTAssertEqual(Recorder.languageCode(preferred: ["en-GB", "es-ES"]), "en")
+    }
+
+    /// Con el teléfono en un idioma que no soportamos se cae al español, que es el del
+    /// usuario de esta app. Lo que NO puede pasar es que devuelva algo vacío o inválido.
+    func testIdiomaNoSoportado() {
+        XCTAssertEqual(Recorder.languageCode(preferred: ["de-DE", "fr-FR"]), "es")
+        XCTAssertEqual(Recorder.languageCode(preferred: []), "es")
+        // Un idioma que no soportamos NO debe tapar a uno que sí, esté donde esté.
+        XCTAssertEqual(Recorder.languageCode(preferred: ["de-DE", "en-US"]), "en")
+        XCTAssertEqual(Recorder.languageCode(preferred: ["fr-FR", "es-MX", "en-US"]), "es")
+    }
+
+    /// El mensaje de error que llega a la pantalla tiene que ser legible y no puede
+    /// arrastrar el volcado del NSError, que es lo que se veía en la captura 05.
+    func testMensajeDeErrorLegible() {
+        let error = NSError(domain: "SFSpeechErrorDomain", code: 1,
+                            userInfo: [NSLocalizedDescriptionKey:
+                                "Cannot check the download status, com.eugenia.app is not subscribed"])
+        let mensaje = Recorder.userMessage(for: error)
+        XCTAssertTrue(mensaje.contains("modelo de voz"), "no explica qué falló: \(mensaje)")
+        XCTAssertFalse(mensaje.contains("Error Domain="), "arrastra el NSError crudo")
+        XCTAssertFalse(mensaje.contains("UserInfo"), "arrastra el UserInfo crudo")
+        XCTAssertTrue(mensaje.contains("SFSpeechErrorDomain 1"), "perdió el dato técnico")
+    }
+}

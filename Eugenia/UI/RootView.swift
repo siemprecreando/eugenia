@@ -95,15 +95,28 @@ private struct NoteRow: View {
 /// del riesgo R1 (plan 11): el iPhone 17e lo soporta, pero Apple Intelligence puede
 /// estar desactivado en Ajustes o el modelo descargándose.
 private struct StatusBadge: View {
+    // La disponibilidad CAMBIA mientras la app está abierta: el modelo termina de
+    // descargarse, o el usuario apaga Apple Intelligence en Ajustes. Leerla dentro de
+    // `body` dejaba la insignia congelada con el primer valor, porque SwiftUI no tiene
+    // ninguna dependencia que le diga que algo cambió — se quedaba verde para siempre.
+    //
+    // Y hay una razón medida para desconfiar de un solo vistazo: en CI el mismo commit
+    // dio `available` y `unavailable(modelNotReady)` en ejecuciones consecutivas.
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var estado = Summarizer.availabilitySnapshot()
+
     var body: some View {
-        let ok = Summarizer.isAvailable
+        let ok = estado.disponible
         Label(ok ? "IA lista" : "IA no disponible",
               systemImage: ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
             .labelStyle(.iconOnly)
             .foregroundStyle(ok ? .green : .orange)
+            .onChange(of: scenePhase) { _, fase in
+                if fase == .active { estado = Summarizer.availabilitySnapshot() }
+            }
             // .help() no muestra nada en iOS: es de macOS. Para que el estado del
             // modelo sea perceptible hace falta accesibilidad de verdad.
             .accessibilityLabel(ok ? "Modelo de IA disponible" : "Modelo de IA no disponible")
-            .accessibilityValue(Summarizer.availabilityDescription())
+            .accessibilityValue(estado.descripcion)
     }
 }

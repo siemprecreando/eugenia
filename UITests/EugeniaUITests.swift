@@ -96,6 +96,12 @@ final class EugeniaUITests: XCTestCase {
         XCTAssertTrue(salir.waitForExistence(timeout: 15), "No se abrió la pantalla de grabación")
         shot(app, "05-grabacion")
 
+        // Falle o no, al usuario NUNCA se le enseña el volcado del NSError. La primera
+        // captura de esta pantalla era un muro rojo con "Error Domain=SFSpeechError
+        // Domain Code=1 ... UserInfo={...}". Esto lo impide de vuelta.
+        let crudos = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Error Domain="))
+        XCTAssertEqual(crudos.count, 0, "la pantalla enseña el NSError en crudo")
+
         salir.tap()
         // Si estaba grabando, el primer toque para; hace falta un segundo para cerrar.
         if salir.waitForExistence(timeout: 10) { salir.tap() }

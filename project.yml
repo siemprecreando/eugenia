@@ -36,6 +36,13 @@ targets:
       path: Eugenia/Resources/Info.plist
       properties:
         CFBundleDisplayName: Eugenia
+        # EL IDIOMA DEL BUNDLE NO ES COSMÉTICA. `Locale.current` se resuelve contra las
+        # localizaciones que declara el Info.plist, no contra Ajustes: sin estas dos
+        # claves el bundle valía `en` y en un iPhone en español la app habría pedido el
+        # modelo de voz INGLÉS para una reunión en español, y habría pintado las fechas
+        # en inglés. Se vio en las capturas del simulador (01-06, run 34375999617).
+        CFBundleDevelopmentRegion: es
+        CFBundleLocalizations: [es, en]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
