@@ -8,15 +8,27 @@ dispositivo**. Plan completo en [`../plan-summary-ai-iphone.md`](../plan-summary
 - **Se instala** con SideStore, que firma en el propio teléfono con un Apple ID gratuito.
 - **Se prueba** desde Linux con `pymobiledevice3`, contra el teléfono real.
 
-> ### Estado: NUNCA COMPILADO
+> ### Estado: COMPILA. Nunca ejecutado en un teléfono.
 >
-> No hay Mac en el equipo, así que **este código no ha pasado por un compilador
-> todavía**. Lo verificado hasta ahora es: sintaxis de los shell scripts (`bash -n`),
-> `afc.py` (`py_compile`), y que los YAML y JSON parsean. El primer `git push` a un
-> repositorio con Actions es lo que dirá la verdad, y va a hacer falta más de una
-> ronda de correcciones. Los puntos con más probabilidad de fallar están marcados en
-> el propio código; el principal son los nombres de `AssetInventory` en
-> `Core/Transcriber.swift`.
+> El build pasa en GitHub Actions (`macos-26`, Xcode 26.6, SDK iOS 26.5) y produce un
+> `.ipa` con un binario arm64 de dispositivo y su dSYM. Hicieron falta **cuatro
+> rondas**:
+>
+> 1. `no such module 'FoundationModels'` — la imagen `macos-15` trae el SDK de iOS 18.
+>    Era el entorno, no el código.
+> 2. Un único error de Swift: `.completeFileProtectionUnlessOpen`, que yo había
+>    escrito con las palabras en otro orden. Todo lo demás compiló a la primera,
+>    incluidos `AssetInventory`, `SpeechAnalyzer` y los macros `@Generable`/`@Guide`,
+>    que eran los puntos que más dudas daban.
+> 3. Verde, pero el `.ipa` venía partido en un `debug.dylib` y **sin dSYM** — y aun
+>    así salía verde. Corregido y ahora el build falla si el dSYM no aparece.
+> 4. Verde y correcto.
+>
+> **Lo que sigue sin estar probado es todo lo que importa:** que la app arranque, que
+> grabe, que `SpeechTranscriber` transcriba y que `FoundationModels` resuma. Que
+> compile solo significa que los tipos encajan. El siguiente paso real es el spike 8
+> del plan — instalar con SideStore y ver si `./scripts/devtest.sh smoke` cierra el
+> bucle.
 
 ---
 
