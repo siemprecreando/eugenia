@@ -74,12 +74,24 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            ENABLE_DEBUG_DYLIB=NO \
+            DEBUG_INFORMATION_FORMAT=dwarf-with-dsym \
             build
 
       - name: Empaquetar el .ipa
         run: |
           APP="build/Build/Products/Debug-iphoneos/Eugenia.app"
           test -d "$APP" || { echo "No se generó $APP"; exit 1; }
+          # Con ENABLE_DEBUG_DYLIB=NO el código debe estar en el binario principal.
+          # Si el ejecutable sale de unos pocos KB es que Xcode volvió a partirlo en
+          # un .debug.dylib, y eso complica la firma en el teléfono.
+          SIZE=$(stat -f%z "$APP/Eugenia")
+          echo "tamaño del ejecutable: $SIZE bytes"
+          if [ "$SIZE" -lt 200000 ]; then
+            echo "El ejecutable es sospechosamente pequeño: ¿sigue activo el debug dylib?"
+            ls -la "$APP"
+            exit 1
+          fi
           # El commit viaja dentro de la app: el informe de diagnóstico lo incluye,
           # así que un fallo siempre se puede atribuir a una versión concreta.
           /usr/libexec/PlistBuddy -c "Add :EugeniaCommit string ${GITHUB_SHA}" "$APP/Info.plist" || \
@@ -89,11 +101,20 @@ jobs:
           zip -qry Eugenia.ipa Payload
           ls -lh Eugenia.ipa
 
-      # Sin el dSYM no se pueden simbolicar los crashes desde Linux (plan 6.5).
+      # Sin el dSYM no se pueden simbolicar los crashes desde Linux, y el canal de
+      # "autopsia" del plan 6.5 deja de existir. Por eso esto FALLA si no aparece, en
+      # vez de seguir en silencio: la primera versión usaba `if [ -d ]` y el dSYM no
+      # se generaba (Debug usa `dwarf` a secas, sin dSYM), así que el build salía
+      # verde sin él y nadie se enteraba hasta el primer crash.
       - name: Empaquetar el dSYM
         run: |
-          DSYM="build/Build/Products/Debug-iphoneos/Eugenia.app.dSYM"
-          if [ -d "$DSYM" ]; then zip -qry Eugenia.dSYM.zip "$DSYM"; fi
+          DSYM=$(find build/Build/Products/Debug-iphoneos -maxdepth 1 -name "*.dSYM" | head -1)
+          if [ -z "$DSYM" ]; then
+            echo "No se generó ningún dSYM. Sin él no hay simbolicación de crashes (plan 6.5)."
+            exit 1
+          fi
+          echo "dSYM: $DSYM"
+          zip -qry Eugenia.dSYM.zip "$DSYM"
 
       - uses: actions/upload-artifact@v4
         with:
