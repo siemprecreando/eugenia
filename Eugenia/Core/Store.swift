@@ -114,7 +114,7 @@ final class Store: ObservableObject {
             // fallar este guardado cuando se para una grabación con el teléfono
             // bloqueado, y perderíamos la nota. `.completeUnlessOpen` cifra igual en
             // reposo sin romper el caso de uso real.
-            try data.write(to: indexURL, options: [.atomic, .fileProtectionCompleteUnlessOpen])
+            try data.write(to: indexURL, options: [.atomic, .completeFileProtectionUnlessOpen])
             Log.event(Log.storage, "index.save", "notes=\(notes.count)")
         } catch {
             Log.failure(Log.storage, "index.save", error)
