@@ -52,8 +52,30 @@ git push -u origin main
 artefacto, o crea un tag (`git tag v0.1.0 && git push --tags`) para que salga como
 Release, que es lo que SideStore sabe instalar desde una URL.
 
-**3. Instalar.** SideStore en el iPhone → añadir el `.ipa`. Recuerda que la firma
-**caduca a los 7 días** y SideStore la refresca solo.
+**3. Instalar.**
+
+*La primera vez, si no tienes SideStore todavía:* el `.ipa` está **sin firmar**, y
+para poner la primera app en el teléfono hace falta algo que firme con tu Apple ID.
+Desde Linux eso lo resuelve **Altcon**, el contenedor oficial de SideStore que lleva
+AltServer-Linux dentro:
+
+```bash
+./scripts/install-sidestore.sh
+```
+
+Conecta el iPhone por cable antes (`usbmuxd` arranca solo, por regla udev). El
+contenedor te pedirá el PIN del teléfono y tu Apple ID — **se recomienda una cuenta
+secundaria**, porque el certificado de desarrollo gratuito queda asociado a ella.
+Al salir deja un fichero `.mobiledevicepairing` que hay que importar en SideStore.
+
+*Ya con SideStore instalado:* instala o actualiza directamente desde
+
+```
+https://github.com/siemprecreando/eugenia/releases/latest/download/Eugenia.ipa
+```
+
+Recuerda que la firma **caduca a los 7 días** y SideStore la refresca sola, siempre
+que tenga el VPN local (StosVPN o WireGuard) configurado.
 
 **4. Conectar el teléfono a esta máquina, una vez:**
 
@@ -88,6 +110,7 @@ project.yml                  proyecto XcodeGen (no hay .pbxproj que mantener a m
 .github/workflows/build.yml  CI: comprueba entitlements, compila sin firmar, empaqueta
 scripts/
   check-entitlements.py      rechaza iCloud / App Groups / push antes de compilar
+  install-sidestore.sh       pone SideStore en el teléfono vía Altcon (solo la 1ª vez)
   setup-device.sh            la conexión de una sola vez
   devtest.sh                 el bucle: lanzar, observar, recoger, diagnosticar
   afc.py                     acceso a Documents/ de la app por house_arrest
