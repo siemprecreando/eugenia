@@ -74,3 +74,18 @@ struct DiagnosticsSuite: Codable {
     var suite: String
     var cases: [Case]
 }
+
+enum ReportStamp {
+    /// Marca ordenable y SEGURA COMO NOMBRE DE FICHERO: 20260908-175530.
+    /// Nada de ISO8601 aquí: lleva dos puntos, y un ':' en una ruta que además viaja
+    /// por AFC hasta Linux es problema seguro.
+    static let formatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    static func string(from date: Date) -> String { formatter.string(from: date) }
+}

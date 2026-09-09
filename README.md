@@ -91,6 +91,75 @@ Eugenia/
   UI/                        tres pantallas: biblioteca, grabación, detalle
 ```
 
+## Repaso de errores y revisión de seguridad
+
+Antes del primer push se hizo una pasada de depuración por lectura (no hay compilador
+en esta máquina) y una revisión de seguridad. Salieron **22 correcciones y 6 hallazgos
+de seguridad**. Los que merecen quedar escritos:
+
+### Habrían roto la compilación
+
+- **13 llamadas a `Log.event(…, nil, …)`.** `caseId` tenía etiqueta y valor por
+  defecto: un parámetro así no se puede pasar posicionalmente. Se reordenó la firma
+  para que `detail` vaya sin etiqueta, que es el uso normal.
+- **Dos `@Guide` apilados** sobre la misma propiedad en `ActionItemDraft`. No está
+  soportado; la descripción y la restricción van en una sola llamada.
+
+### Habrían fallado en el teléfono, sin dar un error útil
+
+- **El formato del micrófono se leía antes de activar la sesión de audio**, cuando
+  `outputFormat(forBus:)` todavía devuelve 0 Hz. El fichero se habría creado con
+  `sampleRate: 0` y habría fallado al escribir, no al crearse. Ahora hay un
+  `prepare()` explícito y una comprobación que falla con un mensaje legible.
+- **`SWIFT_ACTIVE_COMPILATION_CONDITIONS` en vez de `OTHER_SWIFT_FLAGS: "-D DEBUG"`.**
+  Con la segunda forma el flag se parte en dos argumentos y hay versiones de
+  `xcodebuild` donde no llega — y si no llega, la app se compila **sin**
+  `DiagnosticsRunner` y el banco de pruebas no arranca nunca.
+
+### Habrían dado resultados incorrectos en silencio, que es lo peor
+
+- **Los buffers de audio llegaban desordenados al ASR.** Cada buffer abría su propio
+  `Task` para llegar al actor, y varios `Task` esperando a un mismo actor **no**
+  conservan el orden de llegada. La transcripción habría salido sutilmente rota sin
+  un solo error en el log. Ahora hay un `AsyncStream` —que sí garantiza el orden— con
+  un único consumidor, y además fuera del `@MainActor`, así el camino del audio no
+  compite con la interfaz. El mismo bug estaba en el banco de pruebas, donde habría
+  falseado justo las métricas de WER que deciden la puerta de la Fase 0.
+- **`devtest.sh` podía dar un PASS falso.** Los informes se llamaban `report-<uuid>` y
+  el script cogía "el último" alfabéticamente; con un UUID eso no es el más reciente.
+  Si la app no llegaba a escribir uno nuevo, se traía el de la ejecución anterior y
+  daba verde. Ahora el nombre lleva marca de tiempo ordenable y el script borra los
+  informes viejos **antes** de lanzar.
+- **`peakMemoryMB` no era un pico.** Leía la huella una sola vez al final, que es
+  precisamente el número que no sirve para el riesgo R11: el jetsam ocurre en el
+  máximo, no en el valor con el que terminas. Ahora se muestrea cada 250 ms.
+- **Una cola acotada habría perdido audio.** El primer arreglo del orden usaba
+  `.bufferingNewest(512)`, que descarta cuando se llena. Descartar aquí es perder
+  audio que el usuario cree grabado. Ahora la cola no tiene límite y el freno se
+  aplica **solo al ASR**, que es ciudadano de segunda; el disco no pierde nada.
+
+### Seguridad
+
+| # | Hallazgo | Gravedad | Estado |
+|---|---|---|---|
+| S1 | `Log.failure` volcaba `String(describing: error)`, y un error de `FoundationModels` puede llevar dentro el prompt — que es el fragmento de transcripción. **Contenido de reuniones en el syslog**, legible por cualquier ordenador emparejado | **Alta** | Corregido: solo se registra el tipo del error y su dominio/código |
+| S2 | Transcripciones y audio sin clase de protección de datos | Media | Corregido con `.completeUnlessOpen` — **no** `.complete`, que dejaría el fichero ilegible con el teléfono bloqueado y rompería la grabación en segundo plano |
+| S3 | `devtest.sh` escribía en el portátil usando nombres de fichero venidos **del dispositivo**: un artefacto llamado `../../../.ssh/…` habría escrito fuera del directorio | Media | Corregido: se sanea a *basename* y se valida |
+| S4 | `UIFileSharingEnabled` expone **todo** `Documents/`. Con el audio ahí, una build Debug en un teléfono emparejado entregaba las reuniones enteras | Media | Corregido: en `Documents/` solo viven los diagnósticos; audio, transcripciones e índice se movieron a Application Support, que AFC no vende |
+| S5 | `GITHUB_TOKEN` con permisos por defecto y una acción de terceros anclada a una etiqueta mutable (`@v2`) | Baja | `permissions: contents: write` añadido. La etiqueta mutable queda documentada: asumible sin secretos en el repo, hay que anclar a SHA si eso cambia |
+| S6 | El nombre de la suite entraba sin validar en una ruta | Baja | Corregido |
+
+**Lo que la revisión confirmó que está bien:** la app no tiene **ni una sola** llamada
+de red — ni `URLSession`, ni sockets, ni una URL. La tesis "tus reuniones nunca salen
+de tu iPhone" es hoy verificable leyendo el código, no solo confiando en el plan.
+
+**Riesgo residual aceptado:** en Debug, los ficheros de `Documents/diagnostics/`
+—incluidas las transcripciones de las pruebas— sí son accesibles por AFC y desde la
+app Archivos. Es el precio de poder sacar los resultados del teléfono, y por eso el
+corpus de pruebas debe ser audio grabado a propósito, no reuniones reales.
+
+---
+
 ## Decisiones que conviene conocer antes de tocar nada
 
 **`SWIFT_VERSION` es 5.0, no 6.** El plan pide Swift 6 con concurrencia estricta, y

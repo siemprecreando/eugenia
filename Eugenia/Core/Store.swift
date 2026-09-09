@@ -36,16 +36,42 @@ final class Store: ObservableObject {
 
     private let fm = FileManager.default
 
+    /// SEGURIDAD — el reparto de carpetas no es organización, es aislamiento.
+    ///
+    /// `UIFileSharingEnabled` (solo en Debug, para el banco de pruebas del plan 6.5)
+    /// expone **todo** `Documents/` por AFC y en la app Archivos. Si el audio de las
+    /// reuniones viviera ahí, una build Debug en un teléfono emparejado con cualquier
+    /// ordenador entregaría las reuniones enteras.
+    ///
+    /// Por eso: en `Documents/` SOLO los diagnósticos, que es lo que de verdad hay que
+    /// sacar del teléfono. El audio, la transcripción y el índice viven en Application
+    /// Support, que AFC no vende ni con file sharing activado.
     var documents: URL {
         fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
-    var audioDirectory: URL { documents.appendingPathComponent("audio", isDirectory: true) }
+    private var privateRoot: URL {
+        fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    }
+    var audioDirectory: URL { privateRoot.appendingPathComponent("audio", isDirectory: true) }
     var diagnosticsDirectory: URL { documents.appendingPathComponent("diagnostics", isDirectory: true) }
-    private var indexURL: URL { documents.appendingPathComponent("notes.json") }
+    private var indexURL: URL { privateRoot.appendingPathComponent("notes.json") }
 
     private init() {
+        try? fm.createDirectory(at: privateRoot, withIntermediateDirectories: true)
         try? fm.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
         try? fm.createDirectory(at: diagnosticsDirectory, withIntermediateDirectories: true)
+
+        // PROTECCIÓN DE DATOS, con el matiz que importa: `.complete` deja el fichero
+        // ILEGIBLE con el teléfono bloqueado, y esta app graba con la pantalla
+        // bloqueada. Con `.complete` la grabación en segundo plano fallaría al
+        // escribir — perder una reunión que el usuario creía grabada es el único
+        // fallo del que este producto no se recupera (plan 5.1).
+        //
+        // `.completeUnlessOpen` es exactamente el caso: el fichero sigue escribible
+        // mientras está abierto, y queda cifrado en cuanto se cierra y el teléfono
+        // se bloquea.
+        try? fm.setAttributes([.protectionKey: FileProtectionType.completeUnlessOpen],
+                              ofItemAtPath: audioDirectory.path)
         load()
     }
 
@@ -84,9 +110,12 @@ final class Store: ObservableObject {
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(notes)
-            // Protección de datos: el fichero no se puede leer con el teléfono bloqueado.
-            try data.write(to: indexURL, options: [.atomic, .completeFileProtection])
-            Log.event(Log.storage, "index.save", nil, "notes=\(notes.count)")
+            // Mismo razonamiento que en el init: `.completeFileProtection` haría
+            // fallar este guardado cuando se para una grabación con el teléfono
+            // bloqueado, y perderíamos la nota. `.completeUnlessOpen` cifra igual en
+            // reposo sin romper el caso de uso real.
+            try data.write(to: indexURL, options: [.atomic, .fileProtectionCompleteUnlessOpen])
+            Log.event(Log.storage, "index.save", "notes=\(notes.count)")
         } catch {
             Log.failure(Log.storage, "index.save", error)
         }

@@ -40,11 +40,11 @@ actor Transcriber {
                                       reportingOptions: [],
                                       attributeOptions: [])
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [probe]) {
-            Log.event(Log.asr, "assets.download.start", nil, "locale=\(supported.identifier)")
+            Log.event(Log.asr, "assets.download.start", "locale=\(supported.identifier)")
             try await request.downloadAndInstall()
-            Log.event(Log.asr, "assets.download.done", nil, "locale=\(supported.identifier)")
+            Log.event(Log.asr, "assets.download.done", "locale=\(supported.identifier)")
         } else {
-            Log.event(Log.asr, "assets.present", nil, "locale=\(supported.identifier)")
+            Log.event(Log.asr, "assets.present", "locale=\(supported.identifier)")
         }
     }
 
@@ -87,7 +87,7 @@ actor Transcriber {
         }
 
         try await a.start(inputSequence: inputSequence)
-        Log.event(Log.asr, "analyzer.start", caseId, "locale=\(supported.identifier) sr=\(fmt.sampleRate)")
+        Log.event(Log.asr, "analyzer.start", "locale=\(supported.identifier) sr=\(fmt.sampleRate)", caseId: caseId)
         return out
     }
 

@@ -9,6 +9,11 @@
 set -uo pipefail
 
 SUITE="${1:-smoke}"
+# El nombre entra en una ruta: se valida antes de usarlo, aunque sea herramienta local.
+if ! printf '%s' "$SUITE" | grep -qE '^[A-Za-z0-9_-]{1,40}$'; then
+  echo "Nombre de suite no válido: '$SUITE' (solo letras, dígitos, guion y guion bajo)" >&2
+  exit 2
+fi
 BUNDLE="${EUGENIA_BUNDLE:-com.eugenia.app}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
@@ -64,6 +69,17 @@ if [ ! -f "$SUITE_FILE" ]; then
   fail "No existe $SUITE_FILE"
   exit 2
 fi
+
+# Borrar informes anteriores ANTES de lanzar. Sin esto, si la app no llegara a
+# escribir uno nuevo, el paso 5 se traería el de la ejecución anterior y daría un
+# PASS falso: el peor fallo que puede tener un banco de pruebas.
+STALE=$(python3 "$AFC" ls "/Documents/diagnostics" 2>/dev/null | grep '^report-' || true)
+if [ -n "$STALE" ]; then
+  echo "    limpiando $(echo "$STALE" | wc -l) informe(s) anterior(es)"
+  echo "$STALE" | while read -r old_report; do
+    python3 "$AFC" rm "/Documents/diagnostics/$old_report" >/dev/null 2>&1 || true
+  done
+fi
 if ! python3 "$AFC" push "$SUITE_FILE" "/Documents/diagnostics/run.json"; then
   fail "No se pudo escribir en el contenedor de la app."
   fail "Causas típicas: la app instalada es Release (UIFileSharingEnabled=NO), o la"
@@ -109,12 +125,31 @@ fi
 say "6/7 · Trayendo artefactos y crashes"
 python3 - "$REPORT" "$RUN_DIR" "$AFC" <<'PY'
 import json, subprocess, sys
+import os, re
+
 report, run_dir, afc = sys.argv[1], sys.argv[2], sys.argv[3]
 data = json.load(open(report))
+
+# SEGURIDAD — los nombres de artefacto vienen DEL DISPOSITIVO. Aunque hoy los escriba
+# nuestra propia app, cruzan una frontera de confianza: son datos, no rutas de fiar.
+# Sin este filtro, un artefacto llamado "../../../.ssh/authorized_keys" escribiría
+# fuera del directorio de la ejecución, en el portátil.
+SAFE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+
 for case in data.get("cases", []):
     for art in case.get("artifacts", []):
-        subprocess.run([sys.executable, afc, "pull",
-                        f"/Documents/diagnostics/{art}", f"{run_dir}/{art}"],
+        name = os.path.basename(str(art))
+        if not SAFE.match(name) or name in (".", ".."):
+            print(f"    ARTEFACTO IGNORADO por nombre no seguro: {art!r}")
+            continue
+        target = os.path.join(run_dir, name)
+        if os.path.relpath(target, run_dir).startswith(".."):
+            print(f"    ARTEFACTO IGNORADO por salir del directorio: {art!r}")
+            continue
+        # "python3" y no sys.executable: es el mismo intérprete que usan los demás
+        # pasos, y el que tiene instalado pymobiledevice3.
+        subprocess.run(["python3", afc, "pull",
+                        f"/Documents/diagnostics/{name}", target],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 PY
 pymobiledevice3 crash pull "$RUN_DIR/crashes" >/dev/null 2>&1 && echo "    crashes en $RUN_DIR/crashes" || echo "    sin crashes nuevos"
@@ -129,8 +164,10 @@ d = json.load(open(report_path))
 
 run, env, summary = d["run"], d["env"], d["summary"]
 print(f"    dispositivo {run['device']} · iOS {run['os']} · commit {run['commit'][:8]}")
+battery = env["batteryLevel"]
+battery_text = f"{battery:.0%}" if battery >= 0 else "n/d"
 print(f"    IA {env['modelAvailability']} · térmica {env['thermalState']} "
-      f"· batería {env['batteryLevel']:.0%} · libre {env['freeDiskMB']} MB")
+      f"· batería {battery_text} · libre {env['freeDiskMB']} MB")
 
 # Regla del plan 6.5: si arranca por encima de nominal, los números no son comparables.
 if env["thermalState"].lower() not in ("nominal",):

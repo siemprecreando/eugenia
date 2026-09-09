@@ -15,10 +15,22 @@ protocol AudioSource: AnyObject {
     func stop()
 }
 
-enum AudioSourceError: Error {
-    case sessionUnavailable
+enum AudioSourceError: Error, CustomStringConvertible {
     case fileUnreadable(URL)
     case converterFailed
+    case invalidInputFormat(Double, AVAudioChannelCount)
+
+    var description: String {
+        switch self {
+        case .fileUnreadable(let url):
+            return "No se pudo leer el audio: \(url.lastPathComponent)"
+        case .converterFailed:
+            return "No se pudo convertir el formato de audio"
+        case .invalidInputFormat(let rate, let channels):
+            return "El micrófono devolvió un formato inválido (\(rate) Hz, \(channels) canales). "
+                 + "Suele significar que la sesión de audio no estaba activa todavía."
+        }
+    }
 }
 
 // MARK: - Micrófono
@@ -27,15 +39,31 @@ final class MicrophoneAudioSource: AudioSource {
     private let engine = AVAudioEngine()
     private var running = false
 
+    /// OJO: solo es válido DESPUÉS de `prepare()`. Antes de activar la sesión de
+    /// audio, `outputFormat(forBus:)` devuelve un formato con 0 Hz — y un fichero
+    /// creado con `sampleRate: 0` falla en el momento de escribir, no al crearse,
+    /// que es la peor forma de enterarse. Por eso `prepare()` existe.
     var format: AVAudioFormat { engine.inputNode.outputFormat(forBus: 0) }
 
-    func start(onBuffer: @escaping (AVAudioPCMBuffer) -> Void, onFinish: @escaping () -> Void) throws {
+    /// Activa la sesión de audio. Idempotente. Hay que llamarlo antes de leer
+    /// `format` y antes de `start()`.
+    ///
+    /// .record + .default a propósito: NO .voiceChat. El procesamiento de voz de
+    /// Apple está optimizado para el interlocutor cercano y degrada la voz lejana,
+    /// que es justo el caso de uso de este producto (plan 5.1).
+    func prepare() throws {
         let session = AVAudioSession.sharedInstance()
-        // .record + .default a propósito: NO .voiceChat. El procesamiento de voz de
-        // Apple está optimizado para el interlocutor cercano y degrada la voz lejana,
-        // que es justo el caso de uso de este producto (plan 5.1).
         try session.setCategory(.record, mode: .default, options: [.allowBluetooth])
         try session.setActive(true)
+
+        let fmt = engine.inputNode.outputFormat(forBus: 0)
+        guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
+            throw AudioSourceError.invalidInputFormat(fmt.sampleRate, fmt.channelCount)
+        }
+    }
+
+    func start(onBuffer: @escaping (AVAudioPCMBuffer) -> Void, onFinish: @escaping () -> Void) throws {
+        try prepare()
 
         let input = engine.inputNode
         let fmt = input.outputFormat(forBus: 0)
@@ -45,7 +73,7 @@ final class MicrophoneAudioSource: AudioSource {
         engine.prepare()
         try engine.start()
         running = true
-        Log.event(Log.capture, "mic.start", nil, "sr=\(fmt.sampleRate) ch=\(fmt.channelCount)")
+        Log.event(Log.capture, "mic.start", "sr=\(fmt.sampleRate) ch=\(fmt.channelCount)")
     }
 
     func stop() {
@@ -66,7 +94,14 @@ final class MicrophoneAudioSource: AudioSource {
 final class FileAudioSource: AudioSource {
     private let file: AVAudioFile
     private let chunkFrames: AVAudioFrameCount
-    private var cancelled = false
+    // `stop()` se llama desde otro hilo que el bucle de lectura. Sin candado esto es
+    // una carrera de datos: en Swift 5 pasa desapercibida, en Swift 6 no compila.
+    private let lock = NSLock()
+    private var _cancelled = false
+    private var cancelled: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _cancelled }
+        set { lock.lock(); _cancelled = newValue; lock.unlock() }
+    }
     /// A 0 va lo más rápido que pueda; a 1.0 simula tiempo real.
     private let realtimeFactor: Double
 

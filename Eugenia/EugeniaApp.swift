@@ -14,8 +14,7 @@ struct EugeniaApp: App {
                     // se ejecuta la suite antes de que nadie toque la interfaz.
                     await DiagnosticsRunner.runIfRequested()
                     #endif
-                    Log.event(Log.diag, "app.ready", nil,
-                              "llm=\(Summarizer.availabilityDescription()) notes=\(Store.shared.notes.count)")
+                    Log.event(Log.diag, "app.ready", "llm=\(Summarizer.availabilityDescription()) notes=\(Store.shared.notes.count)")
                 }
         }
     }

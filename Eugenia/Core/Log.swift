@@ -25,7 +25,11 @@ enum Log {
 
     /// Marca de evento legible desde el syslog. `caseId` permite recortar la ventana
     /// temporal de un caso de prueba concreto (ver DiagnosticsReport.LogWindow).
-    static func event(_ logger: Logger, _ name: String, caseId: String? = nil, _ detail: String = "") {
+    ///
+    /// `detail` va ANTES que `caseId` a propósito: es el que se usa casi siempre, y
+    /// así se puede pasar sin etiqueta. Un parámetro con etiqueta y valor por defecto
+    /// no se puede pasar posicionalmente, que era el error de la primera versión.
+    static func event(_ logger: Logger, _ name: String, _ detail: String = "", caseId: String? = nil) {
         if let caseId {
             logger.notice("EV \(name, privacy: .public) case=\(caseId, privacy: .public) \(detail, privacy: .public)")
         } else {
@@ -33,8 +37,19 @@ enum Log {
         }
     }
 
+    /// Registra un fallo SIN volcar la descripción libre del error.
+    ///
+    /// SEGURIDAD — esto no es paranoia de estilo. La primera versión hacía
+    /// `String(describing: error)`, y los errores de `FoundationModels` pueden llevar
+    /// dentro el prompt que los provocó. El prompt es el fragmento de transcripción.
+    /// Resultado: contenido de reuniones en el syslog del dispositivo, legible por
+    /// cualquier ordenador emparejado. Justo lo que el producto promete que no ocurre.
+    ///
+    /// Aquí se registra el TIPO del error y, si es un `NSError`, su dominio y código.
+    /// Eso identifica el fallo sin arrastrar datos: para diagnosticar sirve igual.
     static func failure(_ logger: Logger, _ name: String, _ error: Error, caseId: String? = nil) {
-        let text = String(describing: error)
+        let ns = error as NSError
+        let text = "\(type(of: error)) domain=\(ns.domain) code=\(ns.code)"
         if let caseId {
             logger.error("ER \(name, privacy: .public) case=\(caseId, privacy: .public) \(text, privacy: .public)")
         } else {

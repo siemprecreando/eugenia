@@ -40,7 +40,13 @@ enum DiagnosticsRunner {
 
     static func run() async throws {
         let started = Date()
-        let runId = UUID().uuidString.prefix(8).lowercased()
+        // El identificador lleva marca de tiempo delante, no solo un UUID. Con UUID
+        // suelto los informes NO se ordenan cronológicamente por nombre, y el script
+        // de Linux coge "el último" alfabéticamente: podía traerse un informe viejo y
+        // dar por bueno un PASS de otra ejecución. Es el peor fallo posible en un
+        // banco de pruebas — mentir en verde.
+        let stamp = ReportStamp.string(from: started)
+        let runId = "\(stamp)-\(UUID().uuidString.prefix(4).lowercased())"
 
         let suite: DiagnosticsSuite
         if let data = try? Data(contentsOf: requestURL) {
@@ -49,9 +55,14 @@ enum DiagnosticsRunner {
         } else {
             suite = DiagnosticsSuite(suite: "smoke", cases: [])
         }
-        Log.event(Log.diag, "suite.start", nil, "id=\(runId) suite=\(suite.suite) cases=\(suite.cases.count)")
+        Log.event(Log.diag, "suite.start", "id=\(runId) suite=\(suite.suite) cases=\(suite.cases.count)")
 
         UIDevice.current.isBatteryMonitoringEnabled = true
+        // Recién activada, `batteryLevel` devuelve -1 durante un instante. Sin esta
+        // espera el informe decía "batería -100%", que es ruido con pinta de dato.
+        if UIDevice.current.batteryLevel < 0 {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
         let env = DiagnosticsReport.Env(
             appleIntelligence: Summarizer.isAvailable,
             modelAvailability: Summarizer.availabilityDescription(),
@@ -70,7 +81,7 @@ enum DiagnosticsRunner {
         results.insert(smokeCase(started: started), at: 0)
 
         let report = DiagnosticsReport(
-            run: .init(id: String(runId),
+            run: .init(id: runId,
                        commit: Bundle.main.object(forInfoDictionaryKey: "EugeniaCommit") as? String ?? "unknown",
                        device: deviceModel(),
                        os: UIDevice.current.systemVersion,
@@ -89,8 +100,7 @@ enum DiagnosticsRunner {
         let url = Store.shared.diagnosticsDirectory.appendingPathComponent("report-\(runId).json")
         try encoder.encode(report).write(to: url, options: .atomic)
 
-        Log.event(Log.diag, "suite.done", nil,
-                  "id=\(runId) passed=\(report.summary.passed) failed=\(report.summary.failed) skipped=\(report.summary.skipped)")
+        Log.event(Log.diag, "suite.done", "id=\(runId) passed=\(report.summary.passed) failed=\(report.summary.failed) skipped=\(report.summary.skipped)")
     }
 
     // MARK: - Casos
@@ -123,14 +133,20 @@ enum DiagnosticsRunner {
             let locale = Locale(identifier: c.language == "en" ? "en-US" : "es-ES")
             try await Transcriber.prepareModel(for: locale)
 
+            // El pico de memoria se MUESTREA durante el caso. La primera versión leía
+            // la huella una sola vez al final y la llamaba "peak", que es justo el
+            // número que no sirve para el riesgo R11: el jetsam ocurre en el máximo,
+            // no en el valor con el que terminas.
+            let sampler = MemorySampler()
+            sampler.start()
+
             let t0 = Date()
             let text = try await transcribeFile(at: audioURL, locale: locale, caseId: c.id)
             let asrMs = Date().timeIntervalSince(t0) * 1000
 
             var metrics: [String: Double] = [
                 "durationMs": asrMs,
-                "chars": Double(text.count),
-                "peakMemoryMB": Double(peakMemoryMB())
+                "chars": Double(text.count)
             ]
 
             if let reference = c.referenceTranscript {
@@ -149,12 +165,15 @@ enum DiagnosticsRunner {
                     metrics["summaryMs"] = Date().timeIntervalSince(t1) * 1000
                     metrics["actionItems"] = Double(summary.actionItems.count)
                 } else {
+                    metrics["peakMemoryMB"] = Double(sampler.stop())
                     return .init(id: c.id, status: "skipped", metrics: metrics, expected: c.expected,
                                  artifacts: [artifactName],
                                  logWindow: .init(category: "diag", from: from, to: Date()),
                                  message: "LLM no disponible: \(Summarizer.availabilityDescription())")
                 }
             }
+
+            metrics["peakMemoryMB"] = Double(sampler.stop())
 
             let failures = c.expected.compactMap { key, threshold -> String? in
                 guard let value = metrics[key] else { return "sin métrica \(key)" }
@@ -194,17 +213,31 @@ enum DiagnosticsRunner {
             return finals
         }
 
+        // Mismo problema de orden que en Recorder: un `Task` por buffer no conserva
+        // la secuencia. Aquí importa todavía más, porque las métricas de WER que
+        // salgan de aquí son las que deciden la puerta de la Fase 0 — un desorden
+        // silencioso las falsearía sin dar ningún error.
+        let (buffers, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream(
+            bufferingPolicy: .unbounded
+        )
+        let pump = Task.detached(priority: .userInitiated) {
+            for await buffer in buffers { await transcriber.feed(buffer) }
+        }
+
         let source = try FileAudioSource(url: url, realtimeFactor: 0)
         let done = AsyncStream<Void>.makeStream()
         try source.start(onBuffer: { buffer in
-            Task { await transcriber.feed(buffer) }
+            continuation.yield(buffer)
         }, onFinish: {
             done.continuation.finish()
         })
 
         for await _ in done.stream {}
-        // Margen para que los `Task` de feed encolados terminen de entrar.
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        // Cerrar la cola y ESPERAR a que se drene, en vez de dormir un rato y confiar.
+        // El `sleep` de la primera versión era una carrera: en una reunión larga o un
+        // dispositivo caliente, 1,5 s no bastan y se perdía el final de la prueba.
+        continuation.finish()
+        await pump.value
         await transcriber.finish()
 
         return await collector.value.joined(separator: " ")
@@ -234,18 +267,6 @@ enum DiagnosticsRunner {
             .folding(options: .diacriticInsensitive, locale: Locale(identifier: "es"))
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
-    }
-
-    private static func peakMemoryMB() -> Int {
-        var info = task_vm_info_data_t()
-        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size) / 4
-        let result = withUnsafeMutablePointer(to: &info) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
-            }
-        }
-        guard result == KERN_SUCCESS else { return -1 }
-        return Int(info.phys_footprint) / 1_048_576
     }
 
     private static func deviceModel() -> String {

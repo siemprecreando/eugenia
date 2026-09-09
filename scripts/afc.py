@@ -35,13 +35,39 @@ def connect():
     return HouseArrestService(lockdown=lockdown, bundle_id=BUNDLE)
 
 
+def resolve(afc, path):
+    """Normaliza la ruta según lo que AFC esté sirviendo de raíz.
+
+    house_arrest puede montar la RAÍZ DEL CONTENEDOR (y entonces la ruta correcta es
+    /Documents/x) o directamente la carpeta Documents (y entonces es /x). Cuál de las
+    dos depende de la versión de pymobiledevice3 y del modo de vendido, y equivocarse
+    da un "fichero no encontrado" que no explica nada.
+
+    En vez de adivinar, se mira: si la raíz contiene una entrada 'Documents', estamos
+    en el contenedor. Es una llamada y ahorra la peor sesión de depuración del spike 8.
+    """
+    path = "/" + path.strip("/")
+    try:
+        root = set(afc.listdir("/"))
+    except Exception:
+        return path
+
+    at_container = "Documents" in root
+    if at_container and not path.startswith("/Documents"):
+        return "/Documents" + path
+    if not at_container and path.startswith("/Documents"):
+        stripped = path[len("/Documents"):]
+        return stripped if stripped.startswith("/") else "/" + stripped
+    return path
+
+
 def cmd_ls(afc, args):
-    for name in afc.listdir(args.remote):
+    for name in afc.listdir(resolve(afc, args.remote)):
         print(name)
 
 
 def cmd_pull(afc, args):
-    data = afc.get_file_contents(args.remote)
+    data = afc.get_file_contents(resolve(afc, args.remote))
     os.makedirs(os.path.dirname(os.path.abspath(args.local)) or ".", exist_ok=True)
     with open(args.local, "wb") as fh:
         fh.write(data)
@@ -51,12 +77,21 @@ def cmd_pull(afc, args):
 def cmd_push(afc, args):
     with open(args.local, "rb") as fh:
         data = fh.read()
-    afc.set_file_contents(args.remote, data)
+    remote = resolve(afc, args.remote)
+    # Crear los directorios intermedios: la primera vez, Documents/diagnostics/ no
+    # existe todavía en el teléfono y set_file_contents no lo crea solo.
+    parts = remote.strip("/").split("/")[:-1]
+    for i in range(len(parts)):
+        try:
+            afc.makedirs("/" + "/".join(parts[: i + 1]))
+        except Exception:
+            pass
+    afc.set_file_contents(remote, data)
     print(f"{args.local} -> {args.remote} ({len(data)} bytes)")
 
 
 def cmd_rm(afc, args):
-    afc.rm(args.remote)
+    afc.rm(resolve(afc, args.remote))
     print(f"borrado {args.remote}")
 
 

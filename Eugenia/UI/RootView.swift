@@ -99,6 +99,9 @@ private struct StatusBadge: View {
               systemImage: ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
             .labelStyle(.iconOnly)
             .foregroundStyle(ok ? .green : .orange)
-            .help(Summarizer.availabilityDescription())
+            // .help() no muestra nada en iOS: es de macOS. Para que el estado del
+            // modelo sea perceptible hace falta accesibilidad de verdad.
+            .accessibilityLabel(ok ? "Modelo de IA disponible" : "Modelo de IA no disponible")
+            .accessibilityValue(Summarizer.availabilityDescription())
     }
 }

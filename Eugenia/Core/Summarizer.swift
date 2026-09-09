@@ -15,7 +15,8 @@ struct ActionItemDraft: Equatable {
     @Guide(description: "Nombre del responsable SOLO si se dice explícitamente. Si no, cadena vacía. No inventar.")
     var assignee: String
 
-    @Guide(description: "Estado del compromiso")
+    // Un solo @Guide por propiedad: apilar dos macros sobre la misma declaración
+    // no está soportado. La restricción y la descripción van en la misma llamada.
     @Guide(.anyOf(["propuesto", "confirmado", "reasignado", "aparcado", "cancelado"]))
     var status: String
 
@@ -77,7 +78,7 @@ struct Summarizer {
         guard isAvailable else { throw SummarizerError.modelUnavailable(availabilityDescription()) }
 
         let chunks = split(transcript)
-        Log.event(Log.summarize, "mapreduce.start", nil, "chunks=\(chunks.count) chars=\(transcript.count)")
+        Log.event(Log.summarize, "mapreduce.start", "chunks=\(chunks.count) chars=\(transcript.count)")
 
         // MAP con acarreo de estado: cada fragmento recibe el libro de compromisos
         // abiertos y puede modificarlos o cerrarlos, en vez de duplicarlos (plan 5.4.2).
@@ -118,7 +119,7 @@ struct Summarizer {
                 let response = try await session.respond(to: Prompt(prompt), generating: ChunkDigest.self)
                 openItems = response.content.openItems
                 notes.append(response.content.notes)
-                Log.event(Log.summarize, "map.chunk", nil, "i=\(index) open=\(openItems.count)")
+                Log.event(Log.summarize, "map.chunk", "i=\(index) open=\(openItems.count)")
             } catch {
                 // Un fragmento que falla no tira el resumen entero: se anota y se sigue.
                 Log.failure(Log.summarize, "map.chunk", error)
@@ -151,7 +152,7 @@ struct Summarizer {
         """
 
         let response = try await session.respond(to: Prompt(prompt), generating: MeetingSummary.self)
-        Log.event(Log.summarize, "mapreduce.done", nil, "items=\(response.content.actionItems.count)")
+        Log.event(Log.summarize, "mapreduce.done", "items=\(response.content.actionItems.count)")
         return response.content
     }
 
@@ -161,7 +162,7 @@ struct Summarizer {
         var current = ""
         // Trocea por frases para no partir una idea por la mitad.
         for sentence in text.split(separator: ".", omittingEmptySubsequences: false) {
-            let piece = sentence + "."
+            let piece = String(sentence) + "."
             if current.count + piece.count > chunkChars, !current.isEmpty {
                 out.append(current)
                 current = ""

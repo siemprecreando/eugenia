@@ -23,9 +23,11 @@ final class Recorder: ObservableObject {
     @Published private(set) var elapsed: TimeInterval = 0
 
     private var source: AudioSource?
-    private var audioFile: AVAudioFile?
+    private var writer: AudioFileWriter?
     private var transcriber: Transcriber?
     private var consumeTask: Task<Void, Never>?
+    private var pumpTask: Task<Void, Never>?
+    private var bufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
     private var timer: Timer?
     private var startedAt: Date?
     private var currentNote: Note?
@@ -64,6 +66,8 @@ final class Recorder: ObservableObject {
             try await Transcriber.prepareModel(for: locale)
 
             let mic = MicrophoneAudioSource()
+            // prepare() ANTES de leer el formato: ver el comentario en AudioSource.
+            try mic.prepare()
             let sourceFormat = mic.format
 
             // AAC ~64 kbps ≈ 28 MB/hora (plan 5.1 y sección 8).
@@ -74,7 +78,8 @@ final class Recorder: ObservableObject {
                 AVEncoderBitRateKey: 64_000
             ]
             let url = Store.shared.audioDirectory.appendingPathComponent(fileName)
-            audioFile = try AVAudioFile(forWriting: url, settings: settings)
+            let fileWriter = try AudioFileWriter(url: url, settings: settings)
+            writer = fileWriter
 
             let t = Transcriber()
             transcriber = t
@@ -86,9 +91,49 @@ final class Recorder: ObservableObject {
                 }
             }
 
-            try mic.start(onBuffer: { [weak self] buffer in
-                guard let self else { return }
-                Task { await self.ingest(buffer) }
+            // ORDEN DE LOS BUFFERS — esto es lo que arregla el bug más serio que
+            // tenía la primera versión. Antes cada buffer abría su propio `Task` para
+            // llegar al actor del ASR, y varios `Task` esperando a un mismo actor NO
+            // conservan el orden de llegada: el analizador podía recibir el audio
+            // desordenado y producir una transcripción sutilmente rota, sin error.
+            //
+            // Un AsyncStream sí garantiza el orden de `yield`, y un único consumidor
+            // lo drena en secuencia. `yield` es síncrono y no bloquea el hilo de audio.
+            // La política es `.unbounded`, NO `.bufferingNewest`. Una cola acotada
+            // descarta buffers cuando se llena, y aquí descartar significa perder
+            // audio que el usuario cree grabado. El audio es sagrado (plan 5.1).
+            let (buffers, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream(
+                bufferingPolicy: .unbounded
+            )
+            bufferContinuation = continuation
+
+            // Pero "sin límite" tampoco puede significar "sin freno": si el ASR se
+            // atasca, la cola crece y acabamos en el jetsam del riesgo R11. La salida
+            // es la jerarquía que ya fija el plan — el disco nunca pierde nada; el ASR
+            // es ciudadano de segunda y SÍ puede saltarse buffers cuando va atrás.
+            let backlog = Backlog()
+            let pressureLimit = 200   // ~17 s de audio a 4096 frames / 48 kHz
+
+            // El consumidor vive FUERA del MainActor: el camino del audio no compite
+            // con la interfaz.
+            pumpTask = Task.detached(priority: .userInitiated) { [fileWriter] in
+                for await buffer in buffers {
+                    let depth = backlog.decrement()
+
+                    let ok = await fileWriter.write(buffer)      // 1) disco SIEMPRE
+                    if !ok { break }                             //    si falla, se para
+
+                    if depth > pressureLimit {                   // 2) ASR, si da tiempo
+                        Log.event(Log.asr, "asr.drop", "backlog=\(depth)")
+                        continue
+                    }
+                    await t.feed(buffer)
+                }
+            }
+
+            try mic.start(onBuffer: { buffer in
+                backlog.increment()
+                continuation.yield(buffer)
             }, onFinish: {})
             source = mic
 
@@ -98,7 +143,7 @@ final class Recorder: ObservableObject {
                 Task { @MainActor in self.elapsed = Date().timeIntervalSince(s) }
             }
             state = .recording
-            Log.event(Log.capture, "record.start", nil, "note=\(id.uuidString)")
+            Log.event(Log.capture, "record.start", "note=\(id.uuidString)")
         } catch {
             Log.failure(Log.capture, "record.start", error)
             note.state = "failed"
@@ -106,17 +151,6 @@ final class Recorder: ObservableObject {
             Store.shared.save(note)
             state = .failed(String(describing: error))
         }
-    }
-
-    private func ingest(_ buffer: AVAudioPCMBuffer) async {
-        // 1) A disco SIEMPRE primero. Si esto falla, la grabación se para.
-        do {
-            try audioFile?.write(from: buffer)
-        } catch {
-            Log.failure(Log.capture, "audio.write", error)
-        }
-        // 2) Al ASR después. Si esto falla, la grabación continúa.
-        await transcriber?.feed(buffer)
     }
 
     private func handle(_ segment: Transcriber.Segment) {
@@ -133,16 +167,22 @@ final class Recorder: ObservableObject {
         guard state == .recording else { return }
         timer?.invalidate(); timer = nil
         source?.stop(); source = nil
+        // Cerrar el flujo ANTES de finalizar el analizador: así el pump drena lo que
+        // quede encolado y no se pierde el último trozo de la reunión.
+        bufferContinuation?.finish()
+        bufferContinuation = nil
+        _ = await pumpTask?.value
+        pumpTask = nil
         await transcriber?.finish()
         consumeTask?.cancel()
-        audioFile = nil
+        writer = nil
 
         guard var note = currentNote else { state = .idle; return }
         note.duration = startedAt.map { Date().timeIntervalSince($0) } ?? 0
         note.transcript = finals.joined(separator: " ")
         note.state = "transcribed"
         Store.shared.save(note)
-        Log.event(Log.capture, "record.stop", nil, "note=\(note.id.uuidString) secs=\(Int(note.duration)) chars=\(note.transcript.count)")
+        Log.event(Log.capture, "record.stop", "note=\(note.id.uuidString) secs=\(Int(note.duration)) chars=\(note.transcript.count)")
 
         state = .processing("Resumiendo…")
         await summarize(note)

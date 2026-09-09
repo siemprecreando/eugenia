@@ -52,6 +52,10 @@ targets:
       configs:
         Debug:
           EUGENIA_FILE_SHARING: "YES"
-          OTHER_SWIFT_FLAGS: "-D DEBUG"
+          # La forma idiomática de definir DEBUG para `#if DEBUG`. Con
+          # OTHER_SWIFT_FLAGS: "-D DEBUG" el flag se parte en dos argumentos y hay
+          # versiones de xcodebuild donde no llega bien — y si no llega, la app se
+          # compila SIN el DiagnosticsRunner y el banco de pruebas no arranca nunca.
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
         Release:
           EUGENIA_FILE_SHARING: "NO"
