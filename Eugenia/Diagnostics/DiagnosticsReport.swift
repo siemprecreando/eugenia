@@ -62,8 +62,13 @@ struct DiagnosticsReport: Codable {
 struct DiagnosticsSuite: Codable {
     struct Case: Codable {
         var id: String
-        /// Ruta relativa dentro de `Documents/diagnostics/audio/`
-        var audioFile: String
+        /// Ruta relativa dentro de `Documents/diagnostics/audio/`.
+        /// Opcional: los casos de tipo `summarize` pueden traer `transcript` y saltarse
+        /// el audio por completo, que es lo que permite ejercitar el LLM en el
+        /// simulador —donde no hay micrófono ni modelos de voz— sin tocar el teléfono.
+        var audioFile: String?
+        /// Transcripción de partida para los casos `summarize`.
+        var transcript: String?
         var language: String
         /// Transcripción de referencia, opcional. Si está, se calcula WER.
         var referenceTranscript: String?

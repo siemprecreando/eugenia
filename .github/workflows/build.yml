@@ -91,7 +91,7 @@ jobs:
           echo "contenedor: $CONTAINER"
 
           mkdir -p "$CONTAINER/Documents/diagnostics"
-          cp suites/smoke.json "$CONTAINER/Documents/diagnostics/run.json"
+          cp suites/${SUITE:-smoke}.json "$CONTAINER/Documents/diagnostics/run.json"
 
           xcrun simctl launch "$UDID" com.eugenia.app
 
@@ -124,6 +124,49 @@ jobs:
           if d["summary"]["failed"]:
               raise SystemExit(f"{d['summary']['failed']} caso(s) fallidos")
           print("\nEl bucle Linux->app->informe funciona.")
+          PY
+
+      # El simulador de iOS 26 sobre Apple Silicon expone FoundationModels usando el
+      # Apple Intelligence del Mac anfitrión, así que el resumen SÍ se puede ejercitar
+      # aquí. Eso permite medir el map-reduce y la resolución temporal (plan 5.4.4,
+      # spike 4b) sin el teléfono. Lo que sigue necesitando dispositivo es la calidad
+      # acústica y las métricas de batería, térmica y memoria bajo carga real.
+      #
+      # Va en un paso aparte del humo a propósito: si el modelo no está disponible en
+      # el runner, quiero ver "skipped" en este y no confundirlo con el bucle roto.
+      - name: Resumen con el LLM — contexto cruzado temporal
+        id: llm
+        continue-on-error: true
+        run: |
+          UDID="${{ steps.sim.outputs.udid }}"
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" com.eugenia.app data)
+          rm -f "$CONTAINER"/Documents/diagnostics/report-*.json
+          cp suites/llm.json "$CONTAINER/Documents/diagnostics/run.json"
+
+          xcrun simctl terminate "$UDID" com.eugenia.app 2>/dev/null || true
+          xcrun simctl launch "$UDID" com.eugenia.app
+
+          REPORT=""
+          for i in $(seq 1 90); do
+            REPORT=$(find "$CONTAINER/Documents/diagnostics" -name "report-*.json" | head -1)
+            [ -n "$REPORT" ] && break
+            sleep 4
+          done
+          [ -n "$REPORT" ] || { echo "sin informe en 6 min"; exit 1; }
+
+          cat "$REPORT"
+          echo "--- resumen que produjo el modelo ---"
+          cat "$CONTAINER"/Documents/diagnostics/*-summary.json 2>/dev/null || echo "(sin artefacto)"
+          python3 - "$REPORT" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          print("\nIA:", d["env"]["modelAvailability"])
+          for c in d["cases"]:
+              print(f"  [{c['status']}] {c['id']} — {c.get('message') or ''}")
+              for k, v in sorted(c["metrics"].items()):
+                  print(f"        {k} = {v:.1f}")
+          if d["summary"]["failed"]:
+              raise SystemExit("el resumidor no cumplió los umbrales")
           PY
 
       - name: Traza estructurada de la app

@@ -119,14 +119,26 @@ enum DiagnosticsRunner {
 
     private static func runCase(_ c: DiagnosticsSuite.Case) async -> DiagnosticsReport.Case {
         let from = Date()
+
+        // Caso sin audio: la transcripción viene dada y solo se ejercita el resumen.
+        if let transcript = c.transcript {
+            return await runSummarizeOnly(c, transcript: transcript, from: from)
+        }
+
+        guard let audioName = c.audioFile else {
+            return .init(id: c.id, status: "error", metrics: [:], expected: c.expected,
+                         artifacts: [], logWindow: .init(category: "diag", from: from, to: Date()),
+                         message: "El caso no trae ni audioFile ni transcript.")
+        }
+
         let audioURL = Store.shared.diagnosticsDirectory
             .appendingPathComponent("audio", isDirectory: true)
-            .appendingPathComponent(c.audioFile)
+            .appendingPathComponent(audioName)
 
         guard FileManager.default.fileExists(atPath: audioURL.path) else {
             return .init(id: c.id, status: "skipped", metrics: [:], expected: c.expected,
                          artifacts: [], logWindow: .init(category: "diag", from: from, to: Date()),
-                         message: "Falta el audio: \(c.audioFile). Empújalo por AFC a diagnostics/audio/.")
+                         message: "Falta el audio: \(audioName). Empújalo por AFC a diagnostics/audio/.")
         }
 
         do {
@@ -192,6 +204,66 @@ enum DiagnosticsRunner {
         } catch {
             return .init(id: c.id, status: "error", metrics: [:], expected: c.expected,
                          artifacts: [], logWindow: .init(category: "diag", from: from, to: Date()),
+                         message: String(describing: error))
+        }
+    }
+
+    /// Ejercita únicamente el resumidor sobre una transcripción dada.
+    ///
+    /// Es lo que permite medir el map-reduce y la resolución temporal (plan 5.4) en el
+    /// simulador de CI, sin micrófono, sin audio y sin dispositivo. La calidad acústica
+    /// sigue necesitando el iPhone; el razonamiento, no.
+    private static func runSummarizeOnly(_ c: DiagnosticsSuite.Case,
+                                         transcript: String,
+                                         from: Date) async -> DiagnosticsReport.Case {
+        guard Summarizer.isAvailable else {
+            return .init(id: c.id, status: "skipped", metrics: [:], expected: c.expected,
+                         artifacts: [], logWindow: .init(category: "summarize", from: from, to: Date()),
+                         message: "LLM no disponible: \(Summarizer.availabilityDescription())")
+        }
+        let sampler = MemorySampler()
+        sampler.start()
+        do {
+            let t0 = Date()
+            let summary = try await Summarizer.summarize(transcript: transcript, language: c.language)
+            let metrics: [String: Double] = [
+                "summaryMs": Date().timeIntervalSince(t0) * 1000,
+                "actionItems": Double(summary.actionItems.count),
+                "decisions": Double(summary.decisions.count),
+                "overviewChars": Double(summary.overview.count),
+                "peakMemoryMB": Double(sampler.stop())
+            ]
+
+            // El resumen se guarda como artefacto para poder leerlo desde fuera: un
+            // número de action items correcto no garantiza que sean los correctos.
+            let artifactName = "\(c.id.replacingOccurrences(of: "/", with: "_"))-summary.json"
+            if let data = try? JSONEncoder().encode(
+                ["overview": summary.overview,
+                 "decisions": summary.decisions.joined(separator: " | "),
+                 "actionItems": summary.actionItems
+                     .map { "[\($0.status)] \($0.text) · \($0.assignee) · t=\($0.atSeconds)" }
+                     .joined(separator: " | ")]) {
+                try? data.write(to: Store.shared.diagnosticsDirectory
+                    .appendingPathComponent(artifactName), options: .atomic)
+            }
+
+            let failures = c.expected.compactMap { key, threshold -> String? in
+                guard let value = metrics[key] else { return "sin métrica \(key)" }
+                if let max = threshold.max, value > max { return "\(key)=\(value) > max \(max)" }
+                if let min = threshold.min, value < min { return "\(key)=\(value) < min \(min)" }
+                return nil
+            }
+            return .init(id: c.id,
+                         status: failures.isEmpty ? "pass" : "fail",
+                         metrics: metrics,
+                         expected: c.expected,
+                         artifacts: [artifactName],
+                         logWindow: .init(category: "summarize", from: from, to: Date()),
+                         message: failures.isEmpty ? nil : failures.joined(separator: "; "))
+        } catch {
+            _ = sampler.stop()
+            return .init(id: c.id, status: "error", metrics: [:], expected: c.expected,
+                         artifacts: [], logWindow: .init(category: "summarize", from: from, to: Date()),
                          message: String(describing: error))
         }
     }
