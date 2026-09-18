@@ -48,9 +48,13 @@ echo "    ok"
 say "3/4 · Lanzando Altcon (contenedor oficial de SideStore)"
 cat <<'AVISO'
     Dentro del contenedor:
-      · Te pedirá el PIN del teléfono para emparejar.
-      · Luego el Apple ID y la contraseña, y el código de doble factor.
-      · Elige instalar SideStore cuando te lo ofrezca.
+      · Te pedirá el PIN del teléfono para emparejar (solo si no lo estaba ya).
+      · Descarga SideStore.ipa y te deja en una línea 'root@…'. NO pregunta nada
+        más: la instalación la escribes tú, con tu Apple ID y contraseña:
+          ./AltServer -u <UDID> -a TU_APPLE_ID -p 'TU_CONTRASEÑA' SideStore.ipa
+        (el UDID exacto lo imprime el propio contenedor; contraseña entre comillas
+        simples para que no fallen los símbolos). Si pide código de doble factor,
+        escríbelo.
       · Al terminar escribe 'exit'.
 
     Cuando salgas, el fichero .mobiledevicepairing queda en el directorio de salida.
