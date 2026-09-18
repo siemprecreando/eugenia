@@ -68,6 +68,17 @@ contenedor te pedirá el PIN del teléfono y tu Apple ID — **se recomienda una
 secundaria**, porque el certificado de desarrollo gratuito queda asociado a ella.
 Al salir deja un fichero `.mobiledevicepairing` que hay que importar en SideStore.
 
+> **Trampas encontradas en la primera instalación (2026-09-18):**
+> - Altcon **no ofrece** instalar nada: empareja, descarga `SideStore.ipa` y te deja
+>   en una shell `root@…`. La orden la escribes tú (el script la imprime).
+> - El servidor de anisette por defecto de AltServer-Linux (armconverter.com) está
+>   caído: Apple responde `503` y AltServer dice `ALTAppleAPI (17)`. El script ya
+>   pasa `https://ani.sidestore.io`; si falla, `ANISETTE=https://ani.sidestore.app`.
+> - El **modo de desarrollador** no aparece en Ajustes hasta que algo lo revela.
+>   Desde Linux: `pymobiledevice3 amfi reveal-developer-mode`. En Bazzite
+>   pymobiledevice3 no compila con `pip --user` (faltan cabeceras); se usa desde un
+>   contenedor `python:3.12` montando `/var/run/usbmuxd` y `/var/lib/lockdown`.
+
 *Ya con SideStore instalado:* instala o actualiza directamente desde
 
 ```

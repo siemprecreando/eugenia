@@ -54,7 +54,8 @@ cat <<'AVISO'
           ./AltServer -u <UDID> -a TU_APPLE_ID -p 'TU_CONTRASEÑA' SideStore.ipa
         (el UDID exacto lo imprime el propio contenedor; contraseña entre comillas
         simples para que no fallen los símbolos). Si pide código de doble factor,
-        escríbelo.
+        escríbelo. Si Apple responde 503, el servidor de anisette falla: sal y
+        relanza con ANISETTE=https://ani.sidestore.app ./scripts/install-sidestore.sh
       · Al terminar escribe 'exit'.
 
     Cuando salgas, el fichero .mobiledevicepairing queda en el directorio de salida.
@@ -65,8 +66,15 @@ read -r -p "    ¿Seguimos? [s/N] " answer
 
 # --security-opt label=disable: Bazzite lleva SELinux, y sin esto el contenedor no
 # puede tocar el socket de usbmuxd del host.
+# El servidor de anisette que AltServer-Linux trae por defecto (armconverter.com)
+# está caído desde 2026-09 (502), y Apple responde 503 al login:
+#   "Received auth response status code: 503 ... ALTAppleAPI (17)".
+# Los de SideStore funcionan. Se puede sobreescribir: ANISETTE=https://… ./install-sidestore.sh
+ANISETTE="${ANISETTE:-https://ani.sidestore.io}"
+
 podman run --rm -it \
   --security-opt label=disable \
+  -e ALTSERVER_ANISETTE_SERVER="$ANISETTE" \
   -v "$OUT":/mnt \
   -v /var/run/usbmuxd:/var/run/usbmuxd \
   -v /var/lib/lockdown:/tmp/lockdown \
