@@ -18,8 +18,13 @@ set -uo pipefail
 say()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 fail() { printf '\033[31m    %s\033[0m\n' "$*"; }
 
+# Se usa el RPM desempaquetado, NO el AppImage: el WebKit que lleva dentro el
+# AppImage no puede con el Mesa de Bazzite/Fedora 44 ("Could not create default EGL
+# display: EGL_BAD_PARAMETER") y la ventana sale en blanco. El binario del RPM usa
+# el webkit2gtk-4.1 del sistema, que sí funciona. No se instala el RPM (rpm-ostree),
+# solo se extrae.
 DIR="$HOME/Applications"
-APP="$DIR/iloader-linux-amd64.AppImage"
+APP="$DIR/iloader-rpm/usr/bin/iloader"
 
 say "1/3 · ¿Está el iPhone conectado?"
 UDID=$(idevice_id -l 2>/dev/null | head -1)
@@ -31,10 +36,10 @@ echo "    UDID: $UDID"
 
 say "2/3 · iloader"
 if [ ! -x "$APP" ]; then
-  mkdir -p "$DIR"
-  gh release download -R nab138/iloader -p 'iloader-linux-amd64.AppImage' -D "$DIR" --clobber \
+  mkdir -p "$DIR/iloader-rpm"
+  gh release download -R nab138/iloader -p 'iloader-linux-x86_64.rpm' -D "$DIR" --clobber \
     || { fail "No se pudo descargar iloader."; exit 1; }
-  chmod +x "$APP"
+  (cd "$DIR/iloader-rpm" && rpm2cpio ../iloader-linux-x86_64.rpm | cpio -idm --quiet)
 fi
 echo "    $APP"
 
@@ -47,4 +52,4 @@ cat <<'AVISO'
     Luego, en el iPhone: confía en tu Apple ID (Ajustes → General → VPN y gestión
     de dispositivos), instala StosVPN desde la App Store y abre SideStore.
 AVISO
-exec "$APP"
+cd "$(dirname "$APP")" && exec "$APP"

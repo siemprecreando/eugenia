@@ -59,7 +59,7 @@ para poner la primera app en el teléfono hace falta algo que firme con tu Apple
 Desde Linux eso lo hace **iloader**, el instalador que recomienda SideStore:
 
 ```bash
-./scripts/install-sidestore.sh     # descarga iloader a ~/Applications y lo abre
+./scripts/install-sidestore.sh     # extrae iloader en ~/Applications y lo abre
 ```
 
 Conecta el iPhone por cable antes. En la ventana de iloader pones el Apple ID —**se
@@ -71,6 +71,9 @@ emparejamiento.
 >   `503` al login de AltServer-Linux (`ALTAppleAPI (17)`), también con los
 >   servidores de anisette de SideStore. Por eso el script usa iloader (≥ 2.3.2 trae
 >   el arreglo). Además Altcon no ofrecía instalar nada: dejaba una shell `root@…`.
+> - El **AppImage** de iloader abre una ventana en blanco en Bazzite
+>   (`EGL_BAD_PARAMETER`: su WebKit empaquetado choca con el Mesa del sistema).
+>   El script extrae el **RPM** y usa el WebKit del sistema, que sí funciona.
 > - El servidor de anisette por defecto de AltServer-Linux (armconverter.com) está
 >   caído (502).
 > - El **modo de desarrollador** no aparece en Ajustes hasta que algo lo revela.
