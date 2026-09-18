@@ -1,96 +1,50 @@
 #!/usr/bin/env bash
 # Instala SideStore en el iPhone desde Linux, sin Mac. Plan, sección 6.2.
 #
-# QUÉ HACE: lanza Altcon, el contenedor oficial de SideStore, que lleva dentro
-# AltServer-Linux. Ese es el que resuelve el huevo y la gallina — el .ipa de Eugenia
-# está SIN FIRMAR, y para poner la primera app en el teléfono hace falta algo que
-# firme con tu Apple ID. AltServer-Linux lo hace por USB.
+# QUÉ HACE: descarga y abre iloader (github.com/nab138/iloader), el instalador que
+# recomienda hoy la documentación de SideStore. Es una app de escritorio: tú pones
+# el Apple ID en su ventana, instala SideStore y deja el fichero de emparejamiento
+# en el teléfono. Tus credenciales no pasan por este script.
 #
-# LO QUE TIENES QUE PONER TÚ, DENTRO DEL CONTENEDOR:
-#   - Tu Apple ID y su contraseña, más el código de doble factor.
-#   - Se quedan en el contenedor, que es efímero (--rm). No se guardan en el disco
-#     ni salen de tu máquina más allá de Apple.
-#   - Por eso este script lo ejecutas tú y no lo lanzo yo: no debo manejar tus
-#     credenciales, igual que con la contraseña de GitHub.
+# POR QUÉ NO ALTCON: hasta 2026-09 se usaba Altcon (AltServer-Linux en un
+# contenedor). Desde principios de septiembre de 2026 Apple rechaza su login con
+# HTTP 503 ("ALTAppleAPI (17)"), da igual el servidor de anisette. iloader >= 2.3.2
+# trae el arreglo. Detalles en el README.
 #
-# APPLE ID SECUNDARIO: la documentación de SideStore lo recomienda, y tiene sentido.
-# El certificado de desarrollo gratuito va asociado a esa cuenta, y si algo se
-# tuerce prefieres que no sea la cuenta con tus compras y tu iCloud.
+# APPLE ID SECUNDARIO: recomendado. El certificado de desarrollo gratuito va
+# asociado a esa cuenta.
 set -uo pipefail
 
 say()  { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 fail() { printf '\033[31m    %s\033[0m\n' "$*"; }
 
-OUT="${1:-$HOME/sidestore}"
-mkdir -p "$OUT"
+DIR="$HOME/Applications"
+APP="$DIR/iloader-linux-amd64.AppImage"
 
-say "1/4 · ¿Está el iPhone conectado?"
-if ! command -v idevice_id >/dev/null 2>&1; then
-  fail "Falta idevice_id (paquete libimobiledevice-utils)."
-  exit 1
-fi
+say "1/3 · ¿Está el iPhone conectado?"
 UDID=$(idevice_id -l 2>/dev/null | head -1)
 if [ -z "$UDID" ]; then
-  fail "No se ve ningún dispositivo."
-  fail "Conecta el iPhone por cable, desbloquéalo y acepta 'Confiar en este ordenador'."
-  fail "usbmuxd arranca solo al conectarlo (regla udev), no hace falta lanzarlo a mano."
+  fail "No se ve ningún dispositivo. Conecta el cable, desbloquea y acepta 'Confiar'."
   exit 1
 fi
 echo "    UDID: $UDID"
 
-say "2/4 · Comprobando el socket de usbmuxd"
-if [ ! -S /var/run/usbmuxd ] && [ ! -e /var/run/usbmuxd ]; then
-  fail "/var/run/usbmuxd no existe todavía. Desconecta y vuelve a conectar el cable."
-  exit 1
+say "2/3 · iloader"
+if [ ! -x "$APP" ]; then
+  mkdir -p "$DIR"
+  gh release download -R nab138/iloader -p 'iloader-linux-amd64.AppImage' -D "$DIR" --clobber \
+    || { fail "No se pudo descargar iloader."; exit 1; }
+  chmod +x "$APP"
 fi
-echo "    ok"
+echo "    $APP"
 
-say "3/4 · Lanzando Altcon (contenedor oficial de SideStore)"
+say "3/3 · Abriendo iloader"
 cat <<'AVISO'
-    Dentro del contenedor:
-      · Te pedirá el PIN del teléfono para emparejar (solo si no lo estaba ya).
-      · Descarga SideStore.ipa y te deja en una línea 'root@…'. NO pregunta nada
-        más: la instalación la escribes tú, con tu Apple ID y contraseña:
-          ./AltServer -u <UDID> -a TU_APPLE_ID -p 'TU_CONTRASEÑA' SideStore.ipa
-        (el UDID exacto lo imprime el propio contenedor; contraseña entre comillas
-        simples para que no fallen los símbolos). Si pide código de doble factor,
-        escríbelo. Si Apple responde 503, el servidor de anisette falla: sal y
-        relanza con ANISETTE=https://ani.sidestore.app ./scripts/install-sidestore.sh
-      · Al terminar escribe 'exit'.
-
-    Cuando salgas, el fichero .mobiledevicepairing queda en el directorio de salida.
+    En la ventana:
+      · Inicia sesión con tu Apple ID (y el código de doble factor).
+      · Elige el iPhone e instala SideStore.
+      · Deja que coloque el fichero de emparejamiento en el teléfono.
+    Luego, en el iPhone: confía en tu Apple ID (Ajustes → General → VPN y gestión
+    de dispositivos), instala StosVPN desde la App Store y abre SideStore.
 AVISO
-echo
-read -r -p "    ¿Seguimos? [s/N] " answer
-[ "$answer" = "s" ] || [ "$answer" = "S" ] || { echo "    cancelado"; exit 0; }
-
-# --security-opt label=disable: Bazzite lleva SELinux, y sin esto el contenedor no
-# puede tocar el socket de usbmuxd del host.
-# El servidor de anisette que AltServer-Linux trae por defecto (armconverter.com)
-# está caído desde 2026-09 (502), y Apple responde 503 al login:
-#   "Received auth response status code: 503 ... ALTAppleAPI (17)".
-# Los de SideStore funcionan. Se puede sobreescribir: ANISETTE=https://… ./install-sidestore.sh
-ANISETTE="${ANISETTE:-https://ani.sidestore.io}"
-
-podman run --rm -it \
-  --security-opt label=disable \
-  -e ALTSERVER_ANISETTE_SERVER="$ANISETTE" \
-  -v "$OUT":/mnt \
-  -v /var/run/usbmuxd:/var/run/usbmuxd \
-  -v /var/lib/lockdown:/tmp/lockdown \
-  ghcr.io/sidestore/altcon
-
-say "4/4 · Resultado"
-PAIRING=$(find "$OUT" -name "*.mobiledevicepairing" 2>/dev/null | head -1)
-if [ -n "$PAIRING" ]; then
-  echo "    Fichero de emparejamiento: $PAIRING"
-  echo
-  echo "    Sigue en el teléfono:"
-  echo "      1. Instala StosVPN (o WireGuard) desde la App Store — SideStore lo necesita."
-  echo "      2. Pasa ese fichero al iPhone y ábrelo con SideStore para importarlo."
-  echo "      3. En SideStore, añade la fuente o instala directamente desde:"
-  echo "         https://github.com/siemprecreando/eugenia/releases/latest/download/Eugenia.ipa"
-else
-  fail "No apareció ningún .mobiledevicepairing en $OUT."
-  fail "Si el contenedor falló antes de emparejar, revisa el cable y el PIN."
-fi
+exec "$APP"

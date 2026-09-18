@@ -56,24 +56,23 @@ Release, que es lo que SideStore sabe instalar desde una URL.
 
 *La primera vez, si no tienes SideStore todavía:* el `.ipa` está **sin firmar**, y
 para poner la primera app en el teléfono hace falta algo que firme con tu Apple ID.
-Desde Linux eso lo resuelve **Altcon**, el contenedor oficial de SideStore que lleva
-AltServer-Linux dentro:
+Desde Linux eso lo hace **iloader**, el instalador que recomienda SideStore:
 
 ```bash
-./scripts/install-sidestore.sh
+./scripts/install-sidestore.sh     # descarga iloader a ~/Applications y lo abre
 ```
 
-Conecta el iPhone por cable antes (`usbmuxd` arranca solo, por regla udev). El
-contenedor te pedirá el PIN del teléfono y tu Apple ID — **se recomienda una cuenta
-secundaria**, porque el certificado de desarrollo gratuito queda asociado a ella.
-Al salir deja un fichero `.mobiledevicepairing` que hay que importar en SideStore.
+Conecta el iPhone por cable antes. En la ventana de iloader pones el Apple ID —**se
+recomienda una cuenta secundaria**— e instala SideStore con su fichero de
+emparejamiento.
 
 > **Trampas encontradas en la primera instalación (2026-09-18):**
-> - Altcon **no ofrece** instalar nada: empareja, descarga `SideStore.ipa` y te deja
->   en una shell `root@…`. La orden la escribes tú (el script la imprime).
+> - **Altcon ya no sirve.** Desde principios de septiembre de 2026 Apple responde
+>   `503` al login de AltServer-Linux (`ALTAppleAPI (17)`), también con los
+>   servidores de anisette de SideStore. Por eso el script usa iloader (≥ 2.3.2 trae
+>   el arreglo). Además Altcon no ofrecía instalar nada: dejaba una shell `root@…`.
 > - El servidor de anisette por defecto de AltServer-Linux (armconverter.com) está
->   caído: Apple responde `503` y AltServer dice `ALTAppleAPI (17)`. El script ya
->   pasa `https://ani.sidestore.io`; si falla, `ANISETTE=https://ani.sidestore.app`.
+>   caído (502).
 > - El **modo de desarrollador** no aparece en Ajustes hasta que algo lo revela.
 >   Desde Linux: `pymobiledevice3 amfi reveal-developer-mode`. En Bazzite
 >   pymobiledevice3 no compila con `pip --user` (faltan cabeceras); se usa desde un
@@ -121,7 +120,7 @@ project.yml                  proyecto XcodeGen (no hay .pbxproj que mantener a m
 .github/workflows/build.yml  CI: comprueba entitlements, compila sin firmar, empaqueta
 scripts/
   check-entitlements.py      rechaza iCloud / App Groups / push antes de compilar
-  install-sidestore.sh       pone SideStore en el teléfono vía Altcon (solo la 1ª vez)
+  install-sidestore.sh       pone SideStore en el teléfono vía iloader (solo la 1ª vez)
   setup-device.sh            la conexión de una sola vez
   devtest.sh                 el bucle: lanzar, observar, recoger, diagnosticar
   afc.py                     acceso a Documents/ de la app por house_arrest
