@@ -19,28 +19,37 @@ import FoundationModels
 
 // MARK: - Tipos generados
 
+// PRUEBA EN EL IPHONE (2026-09-18, suite llm): con la versión anterior de estos
+// tipos, de 3 tareas salió 1, partida en 4 citas literales. Dos causas: el modelo
+// reutilizaba "c1" del estado abierto para tareas NUEVAS (y se fusionaban con otra),
+// y copiaba frases ("Marta, ¿puedes encargarte?") en vez de formular la tarea. Ahora
+// los identificadores los pone la app, el modelo solo dice "es la T2" o "nueva", la
+// tarea se pide como acción en infinitivo y el instante como la marca de texto (el
+// modelo la copia bien; convertirla a segundos la hacía mal).
+
 @Generable
 struct TimedPoint: Equatable {
     @Guide(description: "Una idea en una frase, en el idioma de la reunión")
     var text: String
-    @Guide(description: "Segundo de la grabación del que sale, tomado de las marcas [mm:ss] del texto")
-    var atSeconds: Int
+    @Guide(description: "La marca de tiempo de la línea de la que sale, copiada tal cual, sin corchetes (p. ej. 41:55 o 1:02:10)")
+    var at: String
 }
 
 @Generable
 struct CommitmentMention: Equatable {
-    @Guide(description: "Identificador estable del compromiso. Si continúa uno del ESTADO ABIERTO, reutiliza su refId; si es nuevo, inventa uno corto (c1, c2…)")
-    var refId: String
-    @Guide(description: "La tarea, en una frase, en el idioma de la reunión")
+    @Guide(description: "Si es EXACTAMENTE el mismo entregable que una tarea del ESTADO ABIERTO (mismo asunto, aunque cambie de responsable, de fecha o se aparque), su id (T1, T2…). Si es otro asunto, la palabra nueva.")
+    var sameAs: String
+    @Guide(description: "La tarea como acción en infinitivo, completa y comprensible sola, p. ej. 'Renovar el certificado del servidor de staging'. Nunca una cita literal ni una pregunta.")
     var text: String
-    @Guide(description: "Responsable SOLO si se dice explícitamente. Si no, cadena vacía. No inventar.")
+    @Guide(description: "Nombre de la persona responsable al final del fragmento, SOLO si se dice. Si no, cadena vacía.")
     var assignee: String
-    @Guide(.anyOf(["propuesto", "confirmado", "reasignado", "aplazado", "cancelado", "cerrado"]))
+    @Guide(description: "propuesto: se pide y nadie lo acepta todavía; confirmado: alguien lo acepta; reasignado: pasa a otra persona; aplazado: se deja para más tarde o se aparca; cancelado: ya no se hará; cerrado: ya está hecho.",
+           .anyOf(["propuesto", "confirmado", "reasignado", "aplazado", "cancelado", "cerrado"]))
     var status: String
     @Guide(description: "Vencimiento EXACTAMENTE como se dijo ('el viernes', 'next week'). Vacío si no se dijo. Nunca conviertas a fecha.")
     var dueText: String
-    @Guide(description: "Segundo de la grabación de esta mención, de las marcas [mm:ss]")
-    var atSeconds: Int
+    @Guide(description: "La marca de tiempo de la línea donde se dice, copiada tal cual, sin corchetes (p. ej. 41:55)")
+    var at: String
 }
 
 @Generable
@@ -49,7 +58,7 @@ struct ChunkDigest {
     var notes: String
     @Guide(description: "Ideas importantes del fragmento con su instante")
     var points: [TimedPoint]
-    @Guide(description: "Menciones de compromisos en este fragmento: nuevos, o cambios de los del estado abierto")
+    @Guide(description: "UNA mención por tarea con su estado al final del fragmento: tareas nuevas y cambios de las del estado abierto. Vacía si no hay tareas.")
     var mentions: [CommitmentMention]
 }
 
@@ -57,9 +66,9 @@ struct ChunkDigest {
 struct MeetingSummary {
     @Guide(description: "Resumen de la reunión en 3-5 frases")
     var overview: String
-    @Guide(description: "Puntos clave, cada uno con el segundo del que procede")
+    @Guide(description: "Puntos clave, cada uno con la marca de tiempo de la idea de la que procede")
     var keyPoints: [TimedPoint]
-    @Guide(description: "Decisiones tomadas, en pasado. Incluye lo aplazado, descartado o cerrado. Vacío si no hubo.")
+    @Guide(description: "Decisiones o acuerdos, en pasado (p. ej. 'Se aparcó el presupuesto hasta el comité'). No repitas las tareas tal cual. Vacío si no hubo.")
     var decisions: [String]
 }
 
@@ -93,9 +102,9 @@ struct Mention: Codable, Equatable {
         self.status = status; self.dueText = dueText; self.atSeconds = atSeconds
     }
 
-    init(_ m: CommitmentMention) {
-        self.init(refId: m.refId, text: m.text, assignee: m.assignee, status: m.status,
-                  dueText: m.dueText, atSeconds: m.atSeconds)
+    init(_ m: CommitmentMention, refId: String) {
+        self.init(refId: refId, text: m.text, assignee: m.assignee, status: m.status,
+                  dueText: m.dueText, atSeconds: Summarizer.seconds(fromMark: m.at))
     }
 }
 
@@ -221,23 +230,33 @@ struct Summarizer {
                 continue
             }
 
-            let open = ActionResolver.resolve(mentions).filter(\.isOpen).suffix(maxOpenItemsInPrompt)
-            let state = open.isEmpty ? "(vacío)" : open.map {
-                "- refId=\($0.refId) [\($0.status)] \($0.text) · \($0.assignee.isEmpty ? "sin responsable" : $0.assignee)"
+            // Ids cortos y numerados por la APP (T1, T2…) para lo que ve el modelo; la
+            // tabla los traduce a los refId internos al volver.
+            let open = Array(ActionResolver.resolve(mentions).filter(\.isOpen).suffix(maxOpenItemsInPrompt))
+            var shortToRef: [String: String] = [:]
+            var refText: [String: String] = [:]
+            let state = open.isEmpty ? "(vacío)" : open.enumerated().map { i, item in
+                shortToRef["t\(i + 1)"] = item.refId
+                refText[item.refId] = item.text
+                return "- T\(i + 1) [\(item.status)] \(item.text) · \(item.assignee.isEmpty ? "sin responsable" : item.assignee)"
+                    + (item.dueText.isEmpty ? "" : " · vence: \(item.dueText)")
             }.joined(separator: "\n")
 
             let session = LanguageModelSession {
                 """
                 Eres un analista de reuniones. Escribes en \(languageName(language)).
-                Recibes un FRAGMENTO de la transcripción, con marcas [mm:ss], y el ESTADO
-                ABIERTO con los compromisos que siguen vivos.
+                Recibes un FRAGMENTO de la transcripción, con marcas de tiempo, y el ESTADO
+                ABIERTO con las tareas que siguen vivas (T1, T2…).
 
                 Reglas, en orden de importancia:
                 1. No inventes. Si un dato no está dicho, déjalo vacío.
-                2. Si un compromiso del estado abierto cambia de responsable, de fecha, se
-                   aplaza o se cancela, emite una mención con SU MISMO refId y el nuevo estado.
-                3. Cada mención e idea lleva el segundo de la marca [mm:ss] más cercana.
-                4. Un tema que vuelve se continúa con su refId, no se duplica.
+                2. Una tarea es algo que alguien tiene que HACER. Formúlala como acción, no
+                   copies la frase. Una petición y su respuesta ("¿puedes…?" "sí, yo")
+                   son UNA sola tarea, confirmada.
+                3. Si una tarea del estado abierto cambia de responsable, de fecha, se
+                   aparca o se cancela, usa su id (T1, T2…) en sameAs. Si es OTRO asunto,
+                   aunque se parezca, sameAs = nueva.
+                4. Cada mención lleva la marca de tiempo de su línea, copiada tal cual.
                 """
             }
             let prompt = """
@@ -250,17 +269,39 @@ struct Summarizer {
             do {
                 let response = try await session.respond(to: Prompt(prompt), generating: ChunkDigest.self)
                 let d = response.content
-                // refIds que el modelo NO vio (cerrados o fuera de los 20 del estado)
-                // pueden repetirse para una tarea distinta: se renombran por fragmento
-                // para que el resolvedor no fusione tareas ajenas.
-                let shown = Set(open.map(\.refId))
-                let existing = Set(mentions.map(\.refId))
-                let newMentions = d.mentions.map(Mention.init).map { m -> Mention in
-                    var x = m
-                    if existing.contains(x.refId) && !shown.contains(x.refId) { x.refId = "k\(index)-\(x.refId)" }
-                    return x
+                // Continuación solo si el id existe Y la tarea habla de lo mismo (comparten
+                // alguna palabra con contenido). Si no, es nueva: mejor dos tareas que
+                // una fusión que borra la otra.
+                //
+                // Ids nuevos con el HASH del fragmento, no su posición: si al reanudar
+                // cambian los cortes, un checkpoint viejo no choca con uno nuevo.
+                // Dos menciones nuevas del MISMO asunto en un fragmento (la petición y el
+                // "sí, yo") comparten id: una tarea, no dos.
+                // Marca ilegible → la última buena del fragmento (o su primera marca):
+                // con 0 la mención se ordenaba la primera y perdía el "gana la última".
+                var lastSecond = Summarizer.firstMark(in: chunk) ?? 0
+                var freshTexts: [(ref: String, text: String)] = []
+                let newMentions = d.mentions.compactMap { m -> Mention? in
+                    let text = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty else { return nil }
+                    var mention: Mention
+                    let key = m.sameAs.trimmingCharacters(in: .whitespaces).lowercased()
+                    if let ref = shortToRef[key], let old = refText[ref],
+                       ActionResolver.sameSubject(old, text) {
+                        mention = Mention(m, refId: ref)
+                    } else if let prev = freshTexts.first(where: { ActionResolver.sameSubject($0.text, text) }) {
+                        mention = Mention(m, refId: prev.ref)
+                    } else {
+                        let ref = "k\(hash.prefix(8))-\(freshTexts.count + 1)"
+                        freshTexts.append((ref, text))
+                        mention = Mention(m, refId: ref)
+                    }
+                    if let s = Summarizer.parseMark(m.at) { lastSecond = s } else { mention.atSeconds = lastSecond }
+                    return mention
                 }
-                let newPoints = d.points.map { Point(text: $0.text, atSeconds: $0.atSeconds) }
+                let newPoints = d.points.map {
+                    Point(text: $0.text, atSeconds: Summarizer.parseMark($0.at) ?? Summarizer.firstMark(in: chunk) ?? 0)
+                }
                 mentions += newMentions
                 notes.append(d.notes)
                 points += newPoints
@@ -297,7 +338,7 @@ struct Summarizer {
             2. Nunca fusiones compromisos con distinto responsable o vencimiento.
             3. Lo aplazado, cancelado o cerrado va en decisiones, en pasado, nunca como pendiente.
             4. No conviertas fechas vagas en fechas concretas.
-            5. Cada punto clave lleva su segundo.
+            5. Cada punto clave lleva la marca [mm:ss] de su idea, copiada tal cual (sin corchetes).
             6. Si algo está marcado CONTRADICTORIO, dilo como pregunta abierta.
             """
         }
@@ -318,9 +359,30 @@ struct Summarizer {
         let s = response.content
         Log.event(Log.summarize, "mapreduce.done", "items=\(resolved.count) points=\(s.keyPoints.count)")
         return SummaryResult(overview: s.overview,
-                             keyPoints: s.keyPoints.map { SummaryPoint(text: $0.text, atSeconds: max(0, $0.atSeconds)) },
+                             keyPoints: s.keyPoints.map { SummaryPoint(text: $0.text, atSeconds: seconds(fromMark: $0.at)) },
                              decisions: s.decisions,
                              actionItems: resolved.map(\.stored))
+    }
+
+    /// "41:55", "1:02:10", "[00:41:55]" → segundos. Lo que no se entienda, 0.
+    static func seconds(fromMark mark: String) -> Int { parseMark(mark) ?? 0 }
+
+    /// Igual, pero nil si no se entiende. Cada parte, como mucho 5 cifras: un número
+    /// absurdo del modelo desbordaba la multiplicación y cerraba la app.
+    static func parseMark(_ mark: String) -> Int? {
+        let parts = mark.trimmingCharacters(in: CharacterSet(charactersIn: "[] "))
+            .split(separator: ":", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard (2...3).contains(parts.count),
+              parts.allSatisfy({ !$0.isEmpty && $0.count <= 5 && $0.allSatisfy { $0.isASCII && $0.isNumber } })
+        else { return nil }
+        return parts.compactMap { Int($0) }.reduce(0) { $0 * 60 + $1 }
+    }
+
+    /// Primera marca [mm:ss] o [h:mm:ss] de un texto.
+    static func firstMark(in text: String) -> Int? {
+        guard let r = text.range(of: #"\[(\d{1,2}:)?\d{1,3}:\d{2}\]"#, options: .regularExpression) else { return nil }
+        return parseMark(String(text[r]))
     }
 
     static func toneDescription(_ tone: String) -> String {
@@ -506,6 +568,31 @@ struct ResolvedItem: Equatable {
 }
 
 enum ActionResolver {
+    private static let stop: Set<String> = [
+        "para", "como", "este", "esta", "esto", "estos", "estas", "hacer", "tener", "sobre", "desde", "hasta",
+        "entre", "cuando", "donde", "todo", "todos", "with", "that", "this", "from", "have", "make", "about",
+        "their", "there", "sera", "antes", "despues",
+        // Verbos genéricos de tarea: compartirlos NO hace que dos tareas sean la misma
+        // ("preparar el informe" / "preparar la demo").
+        "preparar", "enviar", "revisar", "cerrar", "mandar", "terminar", "encargarse", "encargar", "hablar",
+        "llamar", "prepare", "send", "review", "finish", "call", "check",
+        "semana", "viernes", "lunes", "martes", "miercoles", "jueves", "manana", "tarde"
+    ]
+
+    /// ¿Hablan dos formulaciones de la misma tarea? Basta una palabra con contenido
+    /// en común (4+ letras, sin acentos): "Cerrar el presupuesto del Norte" y
+    /// "Encargarse del presupuesto del proyecto Norte" sí; el presupuesto y el
+    /// certificado de staging, no.
+    static func sameSubject(_ a: String, _ b: String) -> Bool {
+        func words(_ s: String) -> Set<String> {
+            Set(s.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                // Solo palabras con letras: un número ("2026") no identifica una tarea.
+                .filter { $0.count >= 4 && !stop.contains($0) && $0.contains(where: \.isLetter) && !$0.allSatisfy(\.isNumber) })
+        }
+        return !words(a).isDisjoint(with: words(b))
+    }
+
     /// Agrupa por `refId`, ordena por instante, la última mención gana y el resto se
     /// conserva como historial. Marca contradicción (nunca la resuelve inventando) si:
     ///  - la última mención es `propuesto` y una anterior era `confirmado`, o

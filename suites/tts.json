@@ -1,0 +1,37 @@
+{
+  "suite": "tts",
+  "cases": [
+    {
+      "id": "diarize/es/tts-2voces",
+      "audioFile": "es-tts-2voces.m4a",
+      "language": "es",
+      "kind": "diarize",
+      "referenceTranscript": "Buenos días. Soy Marta y hoy repasamos el presupuesto del proyecto Norte. Hola, soy Javier. Yo tengo listas las cifras de ventas del trimestre. Perfecto. Entonces tú cierras el presupuesto antes del viernes. De acuerdo, me encargo yo. También hay que renovar el certificado del servidor. Eso lo hago yo esta tarde. Y el miércoles enviamos la propuesta al cliente Delta. Muy bien. Cerramos aquí, gracias a todos.",
+      "expected": {
+        "wer": {
+          "max": 0.25
+        },
+        "speakers": {
+          "min": 2,
+          "max": 3
+        }
+      }
+    },
+    {
+      "id": "diarize/en/tts-2voices",
+      "audioFile": "en-tts-2voices.m4a",
+      "language": "en",
+      "kind": "diarize",
+      "referenceTranscript": "Good morning everyone. I'm Sarah and today we review the launch plan. Thanks Sarah. I'm Daniel. The marketing budget is approved for next quarter. Great. Please send the final numbers to finance by Friday. Sure, I will do that tomorrow morning.",
+      "expected": {
+        "wer": {
+          "max": 0.25
+        },
+        "speakers": {
+          "min": 2,
+          "max": 3
+        }
+      }
+    }
+  ]
+}

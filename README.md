@@ -125,6 +125,25 @@ El script detecta solo el identificador con el que SideStore instaló la app
 pymobiledevice3 nativo; aquí no hace falta: el modo desarrollador se activó con
 `amfi reveal-developer-mode` y la imagen de desarrollador la monta `devtest.sh`.
 
+> **La "pantalla negra" (resuelta 2026-09-18, medida en el iPhone):** una app lanzada
+> con `pymobiledevice3 developer dvt launch` queda viva y en primer plano pero SIN
+> PINTAR (negro total, sin barra de estado) hasta que se cambia de app y se vuelve.
+> Captura antes = app normal; 8 s y 30 s después del lanzamiento remoto = negro. No
+> pasa al abrirla desde el icono ni al girar el teléfono. `devtest.sh` ahora cierra
+> la app al terminar (`dvt kill`), así nunca se queda negra en la mano de Sergio.
+>
+> **Resumen probado en el iPhone (v0.2.1, Apple Intelligence activo):** la suite
+> `llm` salía "OK" con 4 tareas, pero eran UNA (el presupuesto) partida en citas
+> literales; el certificado y la propuesta a Delta no aparecían. El modelo reutilizaba
+> el id "c1" del estado abierto para tareas nuevas. Desde v0.2.2 los ids los pone la
+> app, la tarea se pide como acción y la suite exige las 3 tareas con responsable y
+> estado (`expectedItems`). La prueba de arranque tampoco comprobaba su umbral.
+>
+> **Audio de prueba:** CI genera dos voces sintéticas con texto conocido (artefacto
+> `corpus-tts-<sha>`). `gh run download <run> -n corpus-tts-<sha> -D dist/corpus-tts`
+> y `./scripts/devtest-container.sh tts` lo empuja solo y mide WER y hablantes. Una
+> suite con casos saltados por falta de audio ya NO sale verde.
+>
 > **Trampas del bucle de pruebas (2026-09-18):**
 > - pymobiledevice3 pasó a **API asíncrona**; `afc.py` ya vale para las dos.
 > - En iOS 17+ los servicios de desarrollador (lanzar la app, capturas) van por un

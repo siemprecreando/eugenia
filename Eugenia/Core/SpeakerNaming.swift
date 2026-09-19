@@ -29,9 +29,11 @@ enum SpeakerNaming {
     /// "I am…", "my name is…". ("this is X" y "habla X" a secas daban falsos positivos.) El nombre, en mayúscula (el ASR capitaliza
     /// nombres propios); una o dos palabras.
     private static let introPattern: NSRegularExpression = {
-        let lead = #"(?:\bsoy|\bme llamo|\bmi nombre es|\bles habla|\bte habla|\bI'm|\bI am|\bmy name is)"#
-        let name = #"([A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]+(?:\s+[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]+)?)"#
-        return try! NSRegularExpression(pattern: lead + #"\s+"# + name, options: [.caseInsensitive])
+        // El verbo sin distinguir mayúsculas; el NOMBRE sí (`(?-i:…)`), con cualquier
+        // letra Unicode (François, Zoë) y sin cortar palabras ni tomar "Kevin's".
+        let lead = #"(?:\bsoy|\bme llamo|\bmi nombre es|\bles habla|\bte habla|\bI['’]m|\bI am|\bmy name is)"#
+        let name = #"(?-i:(\p{Lu}\p{Ll}+(?:[ ]\p{Lu}\p{Ll}+)?))(?![\p{L}'’])"#
+        return try! NSRegularExpression(pattern: lead + #"[ ]+"# + name, options: [.caseInsensitive])
     }()
 
     /// Etiqueta → nombre, solo con presentaciones inequívocas: si una etiqueta dice dos
@@ -106,14 +108,22 @@ enum SpeakerNaming {
                 let name = g.name.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !name.isEmpty, name.count <= 40, name.first?.isUppercase == true,
                       let label = byDisplay[g.speaker.trimmingCharacters(in: .whitespaces).lowercased()] else { continue }
-                // Tiene que aparecer en el texto: nada de nombres inventados.
-                guard text.localizedCaseInsensitiveContains(name.split(separator: " ").first.map(String.init) ?? name) else { continue }
+                // Ni una etiqueta ("Hablante 3") ni el nombre de otro hablante.
+                let lower = name.lowercased()
+                guard !lower.hasPrefix("hablante"), !lower.hasPrefix("speaker"),
+                      byDisplay[lower] == nil,
+                      !note.speakerNames.values.contains(where: { $0.lowercased() == lower }) else { continue }
+                // Tiene que aparecer en el texto como PALABRA: "Ana" no vale por "mañana".
+                let first = name.split(separator: " ").first.map(String.init) ?? name
+                guard Store.replaceWord(first, with: "\u{E000}", in: text) != text else { continue }
                 out[label] = name
             }
             let counts = Dictionary(grouping: out.values, by: { $0.lowercased() }).mapValues(\.count)
             return out.filter { counts[$0.value.lowercased()] == 1 }
+        } catch is CancellationError {
+            return [:]                            // grabación nueva: no es un fallo
         } catch {
-            Log.failure(Log.summarize, "speaker.names", error)
+            if !Task.isCancelled { Log.failure(Log.summarize, "speaker.names", error) }
             return [:]
         }
     }

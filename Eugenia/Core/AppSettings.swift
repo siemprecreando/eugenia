@@ -36,10 +36,25 @@ final class AppSettings: ObservableObject {
     /// título de calendario puede ser justo lo delicado.
     @Published var hideTitlesOnLockScreen: Bool { didSet { d.set(hideTitlesOnLockScreen, forKey: "hideTitlesOnLockScreen") } }
 
+    /// ¿Había un valor guardado de retención? Si no, es la primera vez con v0.2.1+.
+    private(set) var retentionWasChosen = true
+
+    /// MIGRACIÓN (revisión 2026-09-18): el nuevo valor por defecto borra el audio al
+    /// procesar. Aplicado sin más, quien actualizara con reuniones ya grabadas perdía
+    /// su audio en el primer arranque sin que nadie se lo preguntara. Si ya hay audio
+    /// guardado, se mantiene "Nunca"; si no hay (instalación nueva), el nuevo defecto.
+    /// Se guarda explícito para no volver a decidirlo.
+    func settleRetentionDefault(hasSavedAudio: Bool) {
+        guard !retentionWasChosen else { return }
+        retentionWasChosen = true
+        audioRetentionDays = hasSavedAudio ? 0 : RetentionPolicy.afterProcessing
+    }
+
     private init() {
         recordingLanguage = d.string(forKey: "recordingLanguage") ?? "auto"
         micProfile = d.string(forKey: "micProfile") ?? MicProfile.room.rawValue
         keepScreenOn = d.object(forKey: "keepScreenOn") as? Bool ?? false
+        retentionWasChosen = d.object(forKey: "audioRetentionDays") != nil
         audioRetentionDays = d.object(forKey: "audioRetentionDays") as? Int ?? RetentionPolicy.afterProcessing
         defaultTemplate = d.string(forKey: "defaultTemplate") ?? SummaryTemplate.executive.rawValue
         summaryTone = d.string(forKey: "summaryTone") ?? "neutral"

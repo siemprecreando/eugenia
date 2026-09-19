@@ -157,17 +157,25 @@ enum RetentionPolicy {
 
     /// ¿Se puede borrar ya el audio sin perder nada? Hace falta texto (si no, el audio
     /// es lo único que hay y podría volver a transcribirse en otro idioma).
-    nonisolated static func audioNoLongerNeeded(_ n: Note) -> Bool {
+    /// Y, si la separación de hablantes está activa, que ya se hayan separado: si falló
+    /// o no dio turnos, el audio se queda (borrarlo lo haría imposible para siempre).
+    nonisolated static func audioNoLongerNeeded(_ n: Note, diarizationEnabled: Bool) -> Bool {
         n.audioState == "present" && !n.isFavorite && !n.allAudioFiles.isEmpty
             && n.pendingLanguage == nil
             && !n.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (!diarizationEnabled || !n.speakerLabels.isEmpty)
     }
 
-    nonisolated static func candidates(_ notes: [Note], days: Int, now: Date = Date()) -> [Note] {
+    nonisolated static func candidates(_ notes: [Note], days: Int, diarizationEnabled: Bool = false,
+                                       now: Date = Date()) -> [Note] {
         if days == afterProcessing {
-            // Ya pasó por la cola (resumida, o fallida solo por el resumen).
+            // Ya pasó por la cola: resumida, o fallida SOLO porque falta Apple
+            // Intelligence. Otras fallidas (p. ej. un cambio de idioma que no pudo
+            // hacerse) conservan el audio para poder reintentarlo.
             return notes.filter {
-                ($0.state == NoteState.summarized || $0.state == NoteState.failed) && audioNoLongerNeeded($0)
+                ($0.state == NoteState.summarized
+                    || $0.state == NoteState.failed && $0.failureCode == "modelUnavailable")
+                    && audioNoLongerNeeded($0, diarizationEnabled: diarizationEnabled)
             }
         }
         guard days > 0 else { return [] }
@@ -188,7 +196,9 @@ enum RetentionPolicy {
 
     @MainActor
     static func sweep() {
-        let victims = candidates(Store.shared.notes, days: AppSettings.shared.audioRetentionDays)
+        guard AppSettings.shared.retentionWasChosen, !Store.shared.indexIsReadOnly else { return }
+        let victims = candidates(Store.shared.notes, days: AppSettings.shared.audioRetentionDays,
+                                 diarizationEnabled: AppSettings.shared.diarizationEnabled)
         for n in victims {
             Store.shared.deleteAudio(of: n)
             Store.shared.update(n.id) { $0.audioState = "deleted" }

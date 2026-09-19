@@ -10,13 +10,39 @@
       "kind": "summarize",
       "expected": {
         "actionItems": {
-          "max": 4,
-          "min": 2
+          "min": 3,
+          "max": 4
         },
         "summaryMs": {
           "max": 180000
         }
-      }
+      },
+      "expectedItems": [
+        {
+          "contains": [
+            "presupuesto",
+            "norte"
+          ],
+          "assignee": "Javier",
+          "status": [
+            "aplazado",
+            "cancelado"
+          ]
+        },
+        {
+          "contains": [
+            "certificado"
+          ],
+          "assignee": "Javier"
+        },
+        {
+          "contains": [
+            "propuesta",
+            "delta"
+          ],
+          "assignee": "Marta"
+        }
+      ]
     }
   ]
 }

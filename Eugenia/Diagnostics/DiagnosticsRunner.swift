@@ -76,6 +76,9 @@ enum DiagnosticsRunner {
             freeDiskMB: Store.shared.freeDiskMB()
         )
 
+        // El arranque se mide AQUÍ, antes de los casos. Antes se medía al final: en la
+        // suite del LLM salía "23 s de arranque", que eran los 23 s del resumen.
+        let smoke = smokeCase(started: started)
         var results: [DiagnosticsReport.Case] = []
         for c in suite.cases {
             results.append(await runCase(c))
@@ -83,7 +86,7 @@ enum DiagnosticsRunner {
 
         // Caso "smoke": prueba el bucle entero sin depender de audio ni del LLM.
         // Es el que valida el spike 8 (plan, Fase 0).
-        results.insert(smokeCase(started: started), at: 0)
+        results.insert(smoke, at: 0)
 
         let report = DiagnosticsReport(
             run: .init(id: runId,
@@ -110,11 +113,45 @@ enum DiagnosticsRunner {
 
     // MARK: - Casos
 
+    /// Cuántas de las tareas esperadas salen BIEN (texto, responsable, estado).
+    private static func checkItems(_ items: [StoredActionItem],
+                                   _ expected: [DiagnosticsSuite.ExpectedItem]) -> (Int, [String]) {
+        let fold: (String) -> String = { $0.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil) }
+        var detail: [String] = []
+        var matched = 0
+        for e in expected {
+            let ok = items.contains { i in
+                e.contains.allSatisfy { fold(i.text).contains(fold($0)) }
+                    && (e.assignee.map { fold(i.assignee).contains(fold($0)) } ?? true)
+                    && (e.status.map { $0.contains(i.status) } ?? true)
+            }
+            if ok { matched += 1 }
+            detail.append("\(e.contains.joined(separator: "+")):\(ok ? "ok" : "NO")")
+        }
+        return (matched, detail)
+    }
+
+    /// Cuándo arrancó ESTE proceso, según el kernel. El arranque real de la app es
+    /// desde ahí hasta que el banco de pruebas se pone en marcha.
+    private static func processStartDate() -> Date? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0 else { return nil }
+        // `p_starttime` es una macro de C que Swift no importa: el campo real es este.
+        let tv = info.kp_proc.p_un.__p_starttime
+        return Date(timeIntervalSince1970: Double(tv.tv_sec) + Double(tv.tv_usec) / 1_000_000)
+    }
+
     private static func smokeCase(started: Date) -> DiagnosticsReport.Case {
-        DiagnosticsReport.Case(
+        // Desde el arranque del proceso (antes medía desde el inicio de la suite, que
+        // es menos de un segundo pase lo que pase: el umbral no servía de nada).
+        let ms = Date().timeIntervalSince(processStartDate() ?? started) * 1000
+        // Antes el estado era "pass" fijo: el umbral no se comprobaba nunca.
+        return DiagnosticsReport.Case(
             id: "smoke/loop",
-            status: "pass",
-            metrics: ["startupMs": Date().timeIntervalSince(started) * 1000],
+            status: ms <= 10_000 ? "pass" : "fail",
+            metrics: ["startupMs": ms],
             expected: ["startupMs": .init(max: 10_000, min: nil)],
             artifacts: [],
             logWindow: .init(category: "diag", from: started, to: Date()),
@@ -186,40 +223,72 @@ enum DiagnosticsRunner {
             let artifactURL = Store.shared.diagnosticsDirectory.appendingPathComponent(artifactName)
             try? text.write(to: artifactURL, atomically: true, encoding: .utf8)
 
+            // Quién habla, con los modelos que van dentro de la app (y sin red).
+            if c.kind == "pipeline" || c.kind == "diarize" {
+                let t2 = Date()
+                do {
+                    let out = try await Diarizer.diarize(urls: [audioURL])
+                    metrics["speakers"] = Double(Set(out.turns.map(\.label)).count)
+                    metrics["diarizeMs"] = Date().timeIntervalSince(t2) * 1000
+                } catch {
+                    metrics["speakers"] = 0
+                    Log.failure(Log.diag, "diarize", error, caseId: c.id)
+                }
+            }
+
+            var llmNote: String?
+            var itemsFailure: String?
             if c.kind == "pipeline" || c.kind == "summarize" {
                 let t1 = Date()
+                // Sin LLM, o si el resumen falla, NO se tiran las métricas de ASR y
+                // hablantes ya medidas: se juzgan igual y el problema va en el mensaje.
                 if Summarizer.isAvailable {
-                    let summary = try await Summarizer.summarize(
-                        segments: segments, plainTranscript: text, language: c.language, template: .executive,
-                        tone: "neutral", meetingDate: Date(), speakerName: { _ in nil },
-                        checkpoints: [], onCheckpoint: { _ in })
-                    metrics["summaryMs"] = Date().timeIntervalSince(t1) * 1000
-                    metrics["actionItems"] = Double(summary.actionItems.count)
+                    do {
+                        let summary = try await Summarizer.summarize(
+                            segments: segments, plainTranscript: text, language: c.language, template: .executive,
+                            tone: "neutral", meetingDate: Date(), speakerName: { _ in nil },
+                            checkpoints: [], onCheckpoint: { _ in })
+                        metrics["summaryMs"] = Date().timeIntervalSince(t1) * 1000
+                        metrics["actionItems"] = Double(summary.actionItems.count)
+                        // Las tareas esperadas también cuentan en los casos con audio.
+                        if let expectedItems = c.expectedItems, !expectedItems.isEmpty {
+                            let (matched, detail) = Self.checkItems(summary.actionItems, expectedItems)
+                            metrics["itemsMatched"] = Double(matched)
+                            metrics["itemsExpected"] = Double(expectedItems.count)
+                            if matched < expectedItems.count {
+                                itemsFailure = "tareas esperadas \(matched)/\(expectedItems.count): \(detail.joined(separator: " "))"
+                            }
+                        }
+                    } catch {
+                        llmNote = "Resumen falló: \(safeMessage(error))"
+                    }
                 } else {
-                    metrics["peakMemoryMB"] = Double(sampler.stop())
-                    return .init(id: c.id, status: "skipped", metrics: metrics, expected: c.expected,
-                                 artifacts: [artifactName],
-                                 logWindow: .init(category: "diag", from: from, to: Date()),
-                                 message: "LLM no disponible: \(Summarizer.availabilityDescription())")
+                    llmNote = "LLM no disponible: \(Summarizer.availabilityDescription())"
                 }
             }
 
             metrics["peakMemoryMB"] = Double(sampler.stop())
 
-            let failures = c.expected.compactMap { key, threshold -> String? in
-                guard let value = metrics[key] else { return "sin métrica \(key)" }
+            // Las métricas del resumen solo se exigen si hubo resumen.
+            let summaryKeys: Set<String> = ["summaryMs", "actionItems", "itemsMatched"]
+            var failures = c.expected.compactMap { key, threshold -> String? in
+                guard let value = metrics[key] else {
+                    return llmNote != nil && summaryKeys.contains(key) ? nil : "sin métrica \(key)"
+                }
                 if let max = threshold.max, value > max { return "\(key)=\(value) > max \(max)" }
                 if let min = threshold.min, value < min { return "\(key)=\(value) < min \(min)" }
                 return nil
             }
+            if let itemsFailure { failures.append(itemsFailure) }
+            let message = (failures + [llmNote].compactMap { $0 }).joined(separator: "; ")
 
             return .init(id: c.id,
                          status: failures.isEmpty ? "pass" : "fail",
                          metrics: metrics,
                          expected: c.expected,
                          artifacts: [artifactName],
-                         logWindow: .init(category: c.kind == "asr" ? "asr" : "summarize", from: from, to: Date()),
-                         message: failures.isEmpty ? nil : failures.joined(separator: "; "))
+                         logWindow: .init(category: c.kind == "asr" || c.kind == "diarize" ? "asr" : "summarize", from: from, to: Date()),
+                         message: message.isEmpty ? nil : message)
         } catch {
             return .init(id: c.id, status: "error", metrics: [:], expected: c.expected,
                          artifacts: [], logWindow: .init(category: "diag", from: from, to: Date()),
@@ -248,13 +317,20 @@ enum DiagnosticsRunner {
                 segments: [], plainTranscript: String(transcript.prefix(200_000)), language: c.language,
                 template: .executive, tone: "neutral", meetingDate: Date(), speakerName: { _ in nil },
                 checkpoints: [], onCheckpoint: { _ in })
-            let metrics: [String: Double] = [
+            let expectedItems = c.expectedItems ?? []
+            let (matched, matchedDetail) = Self.checkItems(summary.actionItems, expectedItems)
+            var metrics: [String: Double] = [
                 "summaryMs": Date().timeIntervalSince(t0) * 1000,
                 "actionItems": Double(summary.actionItems.count),
                 "decisions": Double(summary.decisions.count),
                 "overviewChars": Double(summary.overview.count),
                 "peakMemoryMB": Double(sampler.stop())
             ]
+            if !expectedItems.isEmpty {
+                metrics["itemsMatched"] = Double(matched)
+                metrics["itemsExpected"] = Double(expectedItems.count)
+                Log.event(Log.diag, "summarize.items", matchedDetail.joined(separator: " "), caseId: c.id)
+            }
 
             // El resumen se guarda como artefacto para poder leerlo desde fuera: un
             // número de action items correcto no garantiza que sean los correctos.
@@ -269,11 +345,14 @@ enum DiagnosticsRunner {
                     .appendingPathComponent(artifactName), options: .atomic)
             }
 
-            let failures = c.expected.compactMap { key, threshold -> String? in
+            var failures = c.expected.compactMap { key, threshold -> String? in
                 guard let value = metrics[key] else { return "sin métrica \(key)" }
                 if let max = threshold.max, value > max { return "\(key)=\(value) > max \(max)" }
                 if let min = threshold.min, value < min { return "\(key)=\(value) < min \(min)" }
                 return nil
+            }
+            if matched < expectedItems.count {
+                failures.append("tareas esperadas \(matched)/\(expectedItems.count): \(matchedDetail.joined(separator: " "))")
             }
             return .init(id: c.id,
                          status: failures.isEmpty ? "pass" : "fail",

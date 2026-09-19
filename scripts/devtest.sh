@@ -32,6 +32,13 @@ cleanup() {
   if [ -n "${SYSLOG_PID:-}" ] && kill -0 "$SYSLOG_PID" 2>/dev/null; then
     kill "$SYSLOG_PID" 2>/dev/null || true
   fi
+  # TRAMPA MEDIDA (2026-09-18): una app lanzada con `dvt launch` se queda con la
+  # PANTALLA NEGRA (viva, en primer plano, sin pintar) hasta que el usuario cambia de
+  # app y vuelve. Era la "pantalla negra" que Sergio veía tras cada prueba. Al acabar
+  # se cierra, para que la próxima vez se abra normal desde el icono.
+  if [ -n "${APP_PID:-}" ]; then
+    pymobiledevice3 developer dvt kill --userspace "$APP_PID" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
@@ -94,6 +101,26 @@ if [ -n "$STALE" ]; then
     python3 "$AFC" rm "/Documents/diagnostics/$old_report" >/dev/null 2>&1 || true
   done
 fi
+# Audio de los casos: se empuja solo si está en local (corpus/ o dist/corpus-tts/,
+# que es donde se descarga el artefacto `corpus-tts-<sha>` de CI). Antes había que
+# hacerlo a mano y, si se olvidaba, la suite salía VERDE con todo "saltado".
+AUDIO_NAMES=$(python3 -c 'import json,sys; [print(c["audioFile"]) for c in json.load(open(sys.argv[1]))["cases"] if c.get("audioFile")]' "$SUITE_FILE")
+for name in $AUDIO_NAMES; do
+  # Mismo filtro que la app (isSafeName): solo un nombre, sin rutas.
+  if ! [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || [ "$name" = "." ] || [ "$name" = ".." ]; then
+    fail "Nombre de audio no permitido en la suite: $name"; exit 2
+  fi
+  src=""
+  for dir in "$ROOT/corpus" "$ROOT/dist/corpus-tts"; do
+    [ -f "$dir/$name" ] && { src="$dir/$name"; break; }
+  done
+  if [ -n "$src" ]; then
+    python3 "$AFC" push "$src" "/Documents/diagnostics/audio/$name" >/dev/null && echo "    audio: $name"
+  else
+    warn "falta el audio $name en corpus/ o dist/corpus-tts/ (el caso saldrá como saltado)"
+  fi
+done
+
 if ! python3 "$AFC" push "$SUITE_FILE" "/Documents/diagnostics/run.json"; then
   fail "No se pudo escribir en el contenedor de la app."
   fail "Causas típicas: la app instalada es Release (UIFileSharingEnabled=NO), o la"
@@ -113,6 +140,7 @@ if ! pymobiledevice3 developer dvt launch --userspace --kill-existing "$BUNDLE" 
   warn "El resto del bucle funciona igual — el disparo es un fichero, no un argumento."
   warn "Detalle en $RUN_DIR/launch.txt"
 fi
+APP_PID=$(grep -oE 'pid [0-9]+' "$RUN_DIR/launch.txt" | awk '{print $2}' | tail -1 || true)
 
 # ------------------------------------------------- 5. esperar y traer el informe
 say "5/7 · Esperando el informe (máx. ${TIMEOUT}s)"
@@ -232,7 +260,11 @@ for c in d["cases"]:
                 pass
 
 print(f"\n    {summary['passed']} OK · {summary['failed']} fallos · {summary['skipped']} saltados")
-sys.exit(1 if summary["failed"] else 0)
+# Un caso saltado por falta de audio NO es un verde: no se midió nada.
+missing = [c["id"] for c in d["cases"] if c["status"] == "skipped" and "Falta el audio" in (c.get("message") or "")]
+if missing:
+    print("    NO VÁLIDA: casos sin audio: " + ", ".join(missing))
+sys.exit(1 if summary["failed"] or missing else 0)
 PY
 STATUS=$?
 echo

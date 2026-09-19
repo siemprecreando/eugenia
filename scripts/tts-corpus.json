@@ -1,0 +1,79 @@
+{
+  "_": "Corpus sintético para medir en el iPhone: dos voces de síntesis de macOS leen una reunión con texto CONOCIDO. Lo genera make-tts-corpus.py en CI (macOS). No sustituye a una reunión real: mide que el ASR y la separación de hablantes funcionan de punta a punta.",
+  "cases": [
+    {
+      "id": "diarize/es/tts-2voces",
+      "file": "es-tts-2voces.m4a",
+      "language": "es",
+      "kind": "diarize",
+      "expected": {
+        "wer": {
+          "max": 0.25
+        },
+        "speakers": {
+          "min": 2,
+          "max": 3
+        }
+      },
+      "turns": [
+        [
+          0,
+          "Buenos días. Soy Marta y hoy repasamos el presupuesto del proyecto Norte."
+        ],
+        [
+          1,
+          "Hola, soy Javier. Yo tengo listas las cifras de ventas del trimestre."
+        ],
+        [
+          0,
+          "Perfecto. Entonces tú cierras el presupuesto antes del viernes."
+        ],
+        [
+          1,
+          "De acuerdo, me encargo yo. También hay que renovar el certificado del servidor."
+        ],
+        [
+          0,
+          "Eso lo hago yo esta tarde. Y el miércoles enviamos la propuesta al cliente Delta."
+        ],
+        [
+          1,
+          "Muy bien. Cerramos aquí, gracias a todos."
+        ]
+      ]
+    },
+    {
+      "id": "diarize/en/tts-2voices",
+      "file": "en-tts-2voices.m4a",
+      "language": "en",
+      "kind": "diarize",
+      "expected": {
+        "wer": {
+          "max": 0.25
+        },
+        "speakers": {
+          "min": 2,
+          "max": 3
+        }
+      },
+      "turns": [
+        [
+          0,
+          "Good morning everyone. I'm Sarah and today we review the launch plan."
+        ],
+        [
+          1,
+          "Thanks Sarah. I'm Daniel. The marketing budget is approved for next quarter."
+        ],
+        [
+          0,
+          "Great. Please send the final numbers to finance by Friday."
+        ],
+        [
+          1,
+          "Sure, I will do that tomorrow morning."
+        ]
+      ]
+    }
+  ]
+}

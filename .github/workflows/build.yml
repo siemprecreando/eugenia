@@ -160,6 +160,25 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO
 
+      # Audio de prueba con texto conocido (dos voces de síntesis) para medir en el
+      # iPhone transcripción y hablantes. En Linux:
+      #   gh run download <run> -n corpus-tts-<sha> -D dist/corpus-tts
+      #   ./scripts/devtest-container.sh tts     (empuja el audio solo)
+      # Opcional: si faltan voces o afconvert protesta, no bloquea la Release.
+      - name: Corpus de voz sintética
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: python3 scripts/make-tts-corpus.py corpus-tts
+
+      - name: Publicar el corpus
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: corpus-tts-${{ github.sha }}
+          path: corpus-tts/*.m4a
+          if-no-files-found: warn
+
       # Se extraen SIEMPRE, también si la prueba falló: cuando falla, la captura del
       # momento del fallo es justo lo que hace falta para entenderlo desde Linux.
       - name: Extraer las capturas
@@ -180,12 +199,20 @@ jobs:
               data = json.loads(manifest.read_text())
               for entrada in (data if isinstance(data, list) else [data]):
                   for att in entrada.get("attachments", []):
-                      origen = out / att.get("exportedFileName", "")
+                      exportado = att.get("exportedFileName")
+                      if not exportado:
+                          continue
+                      origen = out / exportado
                       nombre = att.get("suggestedHumanReadableName") or origen.name
                       # upload-artifact rechaza " : < > | * ? y saltos de línea.
                       nombre = re.sub(r'[\\":<>|*?\r\n/]', "_", nombre)
-                      if origen.exists() and origen.name != nombre:
-                          shutil.move(str(origen), str(out / nombre))
+                      destino = out / nombre
+                      n = 2
+                      while destino.exists() and destino != origen:
+                          destino = out / f"{pathlib.Path(nombre).stem}-{n}{pathlib.Path(nombre).suffix}"
+                          n += 1
+                      if origen.is_file() and destino != origen:
+                          shutil.move(str(origen), str(destino))
                           renombradas += 1
               manifest.unlink()
           print(f"capturas renombradas: {renombradas}")
@@ -435,12 +462,18 @@ jobs:
       # Fuente de SideStore: con ella, cada versión nueva sale como "Update" en
       # SideStore. URL estable: releases/latest/download/source.json
       - name: Fuente de SideStore
-        run: python3 scripts/make-source.py Eugenia.ipa "$GITHUB_REF_NAME" | tee source.json
+        # `>` y no `| tee`: sin pipefail, un fallo del script salía verde y publicaba
+        # un source.json VACÍO (lo cazó la revisión).
+        run: |
+          python3 scripts/make-source.py Eugenia.ipa "$GITHUB_REF_NAME" > source.json
+          cat source.json
 
       # Suma de comprobación junto al .ipa. El dSYM NO se publica (el repo es
       # público y daría símbolos completos a cualquiera): queda como artefacto.
       - name: SHA256SUMS
-        run: sha256sum Eugenia.ipa | tee SHA256SUMS
+        run: |
+          sha256sum Eugenia.ipa > SHA256SUMS
+          cat SHA256SUMS
 
       # La suma sola no prueba el ORIGEN (va en la misma Release). La atestación sí:
       # `gh attestation verify Eugenia.ipa -R siemprecreando/eugenia` confirma que

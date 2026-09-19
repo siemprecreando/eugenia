@@ -44,7 +44,13 @@ final class ProcessingQueue: ObservableObject {
         for n in Store.shared.notes where n.state == NoteState.processing {
             Store.shared.update(n.id) { $0.state = NoteState.queued }
         }
-        RetentionPolicy.sweep()
+        // Con el índice sin leer (teléfono bloqueado) no se sabe si hay audio: ni se
+        // decide el valor por defecto ni se barre nada.
+        if !Store.shared.indexIsReadOnly {
+            AppSettings.shared.settleRetentionDefault(
+                hasSavedAudio: Store.shared.notes.contains { $0.audioState == "present" && !$0.allAudioFiles.isEmpty })
+            RetentionPolicy.sweep()
+        }
         NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification,
                                                object: nil, queue: .main) { _ in
             Task { @MainActor in ProcessingQueue.shared.kick() }
@@ -180,20 +186,30 @@ final class ProcessingQueue: ObservableObject {
             try Task.checkCancellation()
             guard stillMine(id) else { return }
             // 2a) Nombres dichos en la reunión ("soy Marta"), antes del resumen para
-            // que el resumen ya los use. Solo rellena hablantes sin nombre.
-            if let n = Store.shared.note(id), !n.speakerLabels.isEmpty {
+            // que el resumen ya los use. Solo rellena hablantes sin nombre y SOLO justo
+            // tras separarlos: en un reintento volvía a poner nombres que el usuario
+            // había quitado a propósito.
+            //  Se anota en la nota cuando termina SIN cancelarse: si una grabación la
+            //  interrumpe, el reintento lo vuelve a intentar.
+            if let n = Store.shared.note(id), !n.speakerLabels.isEmpty, !n.namesSuggested {
                 let found = await SpeakerNaming.suggest(for: n)
-                if !found.isEmpty, stillMine(id) {
+                try Task.checkCancellation()
+                if stillMine(id) {
                     Store.shared.update(id) { note in
                         for (l, name) in found where (note.speakerNames[l] ?? "").isEmpty { note.speakerNames[l] = name }
+                        note.namesSuggested = true
                     }
-                    Log.event(Log.queue, "speaker.names", "found=\(found.count)")
+                    if !found.isEmpty { Log.event(Log.queue, "speaker.names", "found=\(found.count)") }
                 }
             }
             // 2b) Audio fuera, si el usuario no quiere guardarlo: a partir de aquí ya no
             // hace falta (el resumen trabaja sobre la transcripción).
-            if AppSettings.shared.audioRetentionDays == RetentionPolicy.afterProcessing,
-               let n = Store.shared.note(id), RetentionPolicy.audioNoLongerNeeded(n) {
+            // `retentionWasChosen`: hasta saber si el usuario ya tenía audio guardado
+            // (índice leído), no se borra nada.
+            if AppSettings.shared.retentionWasChosen,
+               AppSettings.shared.audioRetentionDays == RetentionPolicy.afterProcessing,
+               let n = Store.shared.note(id),
+               RetentionPolicy.audioNoLongerNeeded(n, diarizationEnabled: AppSettings.shared.diarizationEnabled) {
                 RetentionPolicy.dropAudio(n)
             }
             // 3) Resumen

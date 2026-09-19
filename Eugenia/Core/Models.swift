@@ -156,6 +156,9 @@ struct Note: Codable, Identifiable, Equatable {
     /// Motivo de fallo máquina-legible: "modelUnavailable" se reintenta solo al activar
     /// Apple Intelligence; el resto, solo a mano.
     var failureCode: String?
+    /// Ya se buscaron nombres en la conversación (una vez por reunión: en un reintento
+    /// no se vuelven a poner nombres que el usuario quitó).
+    var namesSuggested: Bool = false
 
     struct Translation: Codable, Equatable {
         var transcript: String
@@ -205,6 +208,7 @@ struct Note: Codable, Identifiable, Equatable {
         calendarEventID = try c.decodeIfPresent(String.self, forKey: .calendarEventID)
         pendingLanguage = try c.decodeIfPresent(String.self, forKey: .pendingLanguage)
         failureCode = try c.decodeIfPresent(String.self, forKey: .failureCode)
+        namesSuggested = try c.decodeIfPresent(Bool.self, forKey: .namesSuggested) ?? false
     }
 
     /// Todos los ficheros de audio de la nota, en orden, incluido el formato v0.1.

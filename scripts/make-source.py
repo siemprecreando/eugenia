@@ -52,7 +52,7 @@ def main() -> None:
             "iconURL": f"https://raw.githubusercontent.com/{REPO}/main/Eugenia/Resources/"
                        "Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
             "tintColor": "#3C6FF5",
-            "category": "productivity",
+            "category": "utilities",
             "versions": [{
                 "version": version,
                 "buildVersion": str(info.get("CFBundleVersion", "1")),

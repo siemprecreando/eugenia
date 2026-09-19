@@ -272,9 +272,17 @@ final class RetentionAndExportTests: XCTestCase {
             x.transcript = text
             return x
         }
-        let notes = [n(NoteState.summarized), n(NoteState.failed), n(NoteState.queued),
-                     n(NoteState.summarized, favorite: true), n(NoteState.summarized, text: "  ")]
-        XCTAssertEqual(RetentionPolicy.candidates(notes, days: RetentionPolicy.afterProcessing).count, 2)
+        var sinIA = n(NoteState.failed); sinIA.failureCode = "modelUnavailable"
+        var otroFallo = n(NoteState.failed); otroFallo.failureCode = "other"
+        var conHablantes = n(NoteState.summarized)
+        conHablantes.segments = [TranscriptSegment(text: "hola", start: 0, end: 1, speaker: "S1")]
+        let notes = [n(NoteState.summarized), sinIA, otroFallo, n(NoteState.queued),
+                     n(NoteState.summarized, favorite: true), n(NoteState.summarized, text: "  "), conHablantes]
+        // Sin separación de hablantes: resumida, sin-IA y con-hablantes.
+        XCTAssertEqual(RetentionPolicy.candidates(notes, days: RetentionPolicy.afterProcessing).count, 3)
+        // Con separación activa, solo la que YA tiene hablantes: si no, el audio aún hace falta.
+        XCTAssertEqual(RetentionPolicy.candidates(notes, days: RetentionPolicy.afterProcessing,
+                                                  diarizationEnabled: true).map(\.id), [conHablantes.id])
     }
 
     /// El JSON es el contrato con los atajos de los usuarios: estas claves no cambian.
@@ -357,6 +365,27 @@ final class SpeakerNamingTests: XCTestCase {
         XCTAssertTrue(found.isEmpty, "\(found)")
     }
 
+    func testUnicodeNamesAndApostrophes() {
+        let found = SpeakerNaming.selfIntroductions([
+            seg("S1", "Bonjour, soy François."),
+            seg("S2", "Hi, I’m Zoë."),
+            seg("S3", "I'm Kevin's assistant, by the way.")
+        ])
+        XCTAssertEqual(found, ["S1": "François", "S2": "Zoë"], "Kevin's no es quien habla")
+    }
+
+    @MainActor
+    func testSwappingTwoNamesDoesNotMixThem() throws {
+        var n = Note(title: "t", language: "es", state: NoteState.summarized)
+        n.segments = [seg("S1", "a"), seg("S2", "b")]
+        n.speakerNames = ["S1": "Marta", "S2": "Luis"]
+        n.summaryOverview = "Marta propone y Luis acepta."
+        Store.shared.save(n)
+        defer { Store.shared.delete(Store.shared.note(n.id)!) }
+        Store.shared.renameSpeakers(noteID: n.id, ["S1": "Luis", "S2": "Marta"])
+        XCTAssertEqual(Store.shared.note(n.id)?.summaryOverview, "Luis propone y Marta acepta.")
+    }
+
     func testConflictingIntroductionsAreDropped() {
         // Dos hablantes dicen "soy Marta" (uno cita al otro): no se asigna a ninguno.
         let found = SpeakerNaming.selfIntroductions([
@@ -392,5 +421,31 @@ final class SpeakerNamingTests: XCTestCase {
         XCTAssertEqual(got.segments[2].speaker, "S3")
         XCTAssertEqual(got.displayName(forSpeaker: "S3"), "Luis")
         XCTAssertEqual(got.segments[1].speaker, "S2", "las demás frases no cambian")
+    }
+}
+
+/// Las piezas deterministas del arreglo de tareas (prueba en el iPhone, 2026-09-18).
+final class TaskExtractionTests: XCTestCase {
+    func testSameSubjectSeparatesDifferentDeliverables() {
+        XCTAssertTrue(ActionResolver.sameSubject("Cerrar el presupuesto del proyecto Norte",
+                                                 "Encargarse del presupuesto del Norte"))
+        XCTAssertFalse(ActionResolver.sameSubject("Cerrar el presupuesto del proyecto Norte",
+                                                  "Renovar el certificado del servidor de staging"))
+        XCTAssertFalse(ActionResolver.sameSubject("Cerrar el presupuesto del proyecto Norte",
+                                                  "Preparar la propuesta comercial para Delta"))
+        XCTAssertTrue(ActionResolver.sameSubject("Preparar la propuesta comercial", "PROPUESTA para el cliente"),
+                      "sin distinguir mayúsculas")
+    }
+
+    func testMarksToSeconds() {
+        XCTAssertEqual(Summarizer.seconds(fromMark: "41:55"), 2515)
+        XCTAssertEqual(Summarizer.seconds(fromMark: "[00:41:55]"), 2515)
+        XCTAssertEqual(Summarizer.seconds(fromMark: "1:02:10"), 3730)
+        XCTAssertEqual(Summarizer.seconds(fromMark: "fin de mes"), 0)
+        XCTAssertEqual(Summarizer.seconds(fromMark: ""), 0)
+        XCTAssertNil(Summarizer.parseMark("999999999999999999:59"), "no desborda")
+        XCTAssertNil(Summarizer.parseMark("12"), "un número suelto no es una marca")
+        XCTAssertEqual(Summarizer.firstMark(in: "texto\n[03:12] Ana: hola\n[04:00] x"), 192)
+        XCTAssertEqual(Summarizer.firstMark(in: "[1:02:10] Marta: sí"), 3730)
     }
 }

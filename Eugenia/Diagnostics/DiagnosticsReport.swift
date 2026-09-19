@@ -73,8 +73,19 @@ struct DiagnosticsSuite: Codable {
         /// Transcripción de referencia, opcional. Si está, se calcula WER.
         var referenceTranscript: String?
         var expected: [String: DiagnosticsReport.Threshold]
-        /// asr | summarize | pipeline
+        /// asr | diarize | summarize | pipeline
         var kind: String
+        /// Tareas que TIENEN que salir del resumen (casos summarize). Contar tareas no
+        /// basta: en el iPhone salieron "4 tareas" que eran una sola partida en citas.
+        var expectedItems: [ExpectedItem]?
+    }
+
+    struct ExpectedItem: Codable {
+        /// Palabras que tiene que contener el texto de la tarea (todas, sin acentos).
+        var contains: [String]
+        var assignee: String?
+        /// Estados aceptables (p. ej. ["aplazado", "cancelado"]).
+        var status: [String]?
     }
     var suite: String
     var cases: [Case]

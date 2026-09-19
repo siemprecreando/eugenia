@@ -74,7 +74,15 @@ final class Store: ObservableObject {
         ) { _ in
             MainActor.assumeIsolated {
                 let s = Store.shared
-                if s.waitingForUnlock { s.load() }
+                if s.waitingForUnlock {
+                    s.load()
+                    // Lo que el arranque con el teléfono bloqueado no pudo decidir.
+                    if !s.indexIsReadOnly {
+                        AppSettings.shared.settleRetentionDefault(
+                            hasSavedAudio: s.notes.contains { $0.audioState == "present" && !$0.allAudioFiles.isEmpty })
+                        RetentionPolicy.sweep()
+                    }
+                }
             }
         }
     }
@@ -154,21 +162,44 @@ final class Store: ObservableObject {
     // MARK: - Hablantes
 
     /// Pone (o quita, con nombre vacío) el nombre de un hablante en TODA la reunión.
-    /// El resumen se escribió con el nombre anterior ("Hablante 2" o el viejo): se
-    /// sustituye también ahí, en tareas y en el correo, para que todo diga lo mismo.
     func renameSpeaker(noteID: UUID, label: String, to newName: String) {
-        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        renameSpeakers(noteID: noteID, [label: newName])
+    }
+
+    /// Varios a la vez, en UNA pasada. El resumen se escribió con los nombres de antes
+    /// ("Hablante 2" o el anterior): se sustituyen también en resumen, tareas, correo
+    /// y traducciones. Primero a marcadores únicos y luego a los nombres nuevos: así
+    /// intercambiar Marta↔Luis no acaba con todo diciendo "Luis" (revisión 2026-09-18).
+    func renameSpeakers(noteID: UUID, _ changes: [String: String]) {
         update(noteID) { n in
-            let old = n.displayName(forSpeaker: label) ?? label
-            if name.isEmpty { n.speakerNames[label] = nil } else { n.speakerNames[label] = name }
-            let new = n.displayName(forSpeaker: label) ?? label
-            guard old != new else { return }
-            let swap: (String) -> String = { Self.replaceWord(old, with: new, in: $0) }
+            var swaps: [(old: String, token: String, new: String)] = []
+            for (label, newName) in changes {
+                let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let old = n.displayName(forSpeaker: label) ?? label
+                if name.isEmpty { n.speakerNames[label] = nil } else { n.speakerNames[label] = name }
+                let new = n.displayName(forSpeaker: label) ?? label
+                if old != new { swaps.append((old, "\u{E000}\(swaps.count)\u{E001}", new)) }
+            }
+            guard !swaps.isEmpty else { return }
+            // Nombres largos primero: "Hablante 12" antes que "Hablante 1".
+            swaps.sort { $0.old.count > $1.old.count }
+            let swap: (String) -> String = { text in
+                var t = text
+                for s in swaps { t = Self.replaceWord(s.old, with: s.token, in: t) }
+                for s in swaps { t = t.replacingOccurrences(of: s.token, with: s.new) }
+                return t
+            }
             n.summaryOverview = swap(n.summaryOverview)
             n.keyPoints = n.keyPoints.map { var p = $0; p.text = swap(p.text); return p }
             n.decisions = n.decisions.map(swap)
             n.actionItems = n.actionItems.map { var i = $0; i.text = swap(i.text); i.assignee = swap(i.assignee); return i }
             n.followUpEmail = swap(n.followUpEmail)
+            n.translations = n.translations.mapValues { tr in
+                var t = tr
+                t.overview = swap(t.overview)
+                t.decisions = t.decisions.map(swap)
+                return t
+            }
         }
         SearchIndex.shared.invalidate(noteID)
     }
@@ -177,7 +208,8 @@ final class Store: ObservableObject {
     nonisolated static func replaceWord(_ old: String, with new: String, in text: String) -> String {
         guard !old.isEmpty, text.localizedCaseInsensitiveContains(old) else { return text }
         let pattern = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: old) + "(?![\\p{L}\\p{N}])"
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return text }
+        // Sin distinguir mayúsculas: el modelo a veces escribe "hablante 2".
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return text }
         return re.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text),
                                            withTemplate: NSRegularExpression.escapedTemplate(for: new))
     }
@@ -187,14 +219,19 @@ final class Store: ObservableObject {
     @discardableResult
     func reassignSegment(noteID: UUID, segmentID: UUID, to label: String?, newName: String = "") -> String? {
         var result: String?
+        let knownVoiceLabels = Set(DiarizationCache.shared.embeddings(noteID: noteID).keys)
         update(noteID) { n in
             guard let i = n.segments.firstIndex(where: { $0.id == segmentID }) else { return }
             var target = label
             if target == nil {
-                let used = n.speakerLabels.compactMap { Int($0.drop(while: { !$0.isNumber })) }
+                // El número nuevo no puede ser de NADIE: ni de las frases, ni de un
+                // nombre guardado, ni de una huella de la separación (un hablante sin
+                // frases también la tiene). Si no, la persona nueva heredaba nombre y voz.
+                let known = Set(n.speakerLabels).union(n.speakerNames.keys).union(knownVoiceLabels)
+                let used = known.compactMap { Int($0.drop(while: { !$0.isNumber })) }
                 target = "S\((used.max() ?? 0) + 1)"
                 let clean = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !clean.isEmpty { n.speakerNames[target!] = clean }
+                n.speakerNames[target!] = clean.isEmpty ? nil : clean
             }
             n.segments[i].speaker = target
             n.transcript = n.renderedTranscript(withSpeakers: false)

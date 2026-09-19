@@ -589,11 +589,8 @@ struct SpeakerNamesView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Guardar") {
                         let clean = names.mapValues { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.value.isEmpty }
-                        // Uno a uno por `renameSpeaker`: así el resumen y las tareas
-                        // dejan de decir "Hablante 2".
-                        for (k, v) in clean where note.speakerNames[k] != v {
-                            store.renameSpeaker(noteID: note.id, label: k, to: v)
-                        }
+                        // Todos en una pasada: intercambiar dos nombres no los mezcla.
+                        store.renameSpeakers(noteID: note.id, clean.filter { note.speakerNames[$0.key] != $0.value })
                         let emb = DiarizationCache.shared.embeddings(noteID: note.id)
                         for (label, name) in clean { if let e = emb[label] { VoiceprintStore.shared.enroll(name: name, embedding: e) } }
                         SearchIndex.shared.invalidate(note.id)
