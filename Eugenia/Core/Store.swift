@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// Persistencia en disco. Plan, sección 7 reducido a un índice JSON más ficheros.
 ///
@@ -15,6 +16,8 @@ final class Store: ObservableObject {
     /// Si el índice no se pudo leer, NO se vuelve a escribir: escribir encima de un
     /// índice que no entendemos es borrar todas las reuniones (revisión 2026-09-18).
     private(set) var indexIsReadOnly = false
+    /// El índice existe pero no se pudo leer (teléfono bloqueado): se relee al desbloquear.
+    private var waitingForUnlock = false
     /// Notas borradas en esta sesión. Un resumen que termina DESPUÉS del borrado no
     /// puede resucitarlas al guardar.
     private var deletedIDs: Set<UUID> = []
@@ -65,10 +68,33 @@ final class Store: ObservableObject {
         excludeFromBackup(audioDirectory)
         excludeFromBackup(privateRoot)
         load()
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+            object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                let s = Store.shared
+                if s.waitingForUnlock { s.load() }
+            }
+        }
     }
 
     func load() {
-        guard let data = try? Data(contentsOf: indexURL) else { notes = []; return }
+        // "No existe" y "no se puede leer" NO son lo mismo. Si iOS arranca la app en
+        // segundo plano con el teléfono bloqueado (tarea de fondo, Siri), el índice
+        // existe pero está cifrado: tratarlo como vacío hacía que el siguiente guardado
+        // pisara todas las reuniones con una sola (revisión de seguridad 2026-09-18).
+        guard fm.fileExists(atPath: indexURL.path) else { notes = []; indexIsReadOnly = false; return }
+        let data: Data
+        do {
+            data = try Data(contentsOf: indexURL)
+        } catch {
+            Log.failure(Log.storage, "index.read", error)
+            indexIsReadOnly = true
+            waitingForUnlock = true
+            return
+        }
+        waitingForUnlock = false
         do {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
@@ -99,6 +125,10 @@ final class Store: ObservableObject {
 
     func note(_ id: UUID) -> Note? { notes.first { $0.id == id } }
 
+    /// Restaurar de una copia una nota borrada en esta misma sesión: sin esto `save`
+    /// la ignoraba en silencio (protección contra resúmenes que llegan tarde).
+    func allowRestore(_ id: UUID) { deletedIDs.remove(id) }
+
     /// Modificación puntual sin pisar lo que otro trabajo haya guardado entretanto:
     /// se relee la nota actual del índice y se aplica el cambio sobre ella.
     func update(_ id: UUID, _ change: (inout Note) -> Void) {
@@ -108,6 +138,12 @@ final class Store: ObservableObject {
     }
 
     func delete(_ note: Note) {
+        // La reunión que se está grabando no se borra: dejaba la grabadora, la Live
+        // Activity y la cola a medias (revisión 2026-09-18). Primero hay que pararla.
+        guard note.id != Recorder.shared.currentNoteID else {
+            Log.event(Log.storage, "delete.blocked.recording")
+            return
+        }
         deletedIDs.insert(note.id)
         deleteAudio(of: note)
         DiarizationCache.shared.remove(noteID: note.id)
@@ -177,7 +213,11 @@ final class Store: ObservableObject {
             // fallar este guardado cuando se para una grabación con el teléfono
             // bloqueado, y perderíamos la nota. `.completeUnlessOpen` cifra igual en
             // reposo sin romper el caso de uso real.
-            try data.write(to: indexURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+            //
+            // El ÍNDICE va con `.completeUntilFirstUserAuthentication`: tiene que poder
+            // leerse cuando iOS arranca la app en segundo plano con el teléfono
+            // bloqueado (tarea de fondo, Siri). El audio sigue en `.completeUnlessOpen`.
+            try data.write(to: indexURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
             // La escritura atómica crea un fichero NUEVO: la exclusión de copia de
             // seguridad hay que volver a ponerla cada vez.
             excludeFromBackup(indexURL)

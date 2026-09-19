@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import AVFoundation
 import SwiftUI
 
@@ -230,7 +231,12 @@ struct NoteDetailView: View {
             } else {
                 Text(note.followUpEmail).textSelection(.enabled).font(.callout)
                 HStack {
-                    Button("Copiar") { UIPasteboard.general.string = note.followUpEmail }
+                    Button("Copiar") {
+                        // Solo en este iPhone (sin Portapapeles Universal) y caduca a los 2 min.
+                        UIPasteboard.general.setItems([[UTType.plainText.identifier: note.followUpEmail]],
+                                                      options: [.localOnly: true,
+                                                                .expirationDate: Date().addingTimeInterval(120)])
+                    }
                     Spacer()
                     Button("Rehacer") { store.update(note.id) { $0.followUpEmail = "" } }
                 }
@@ -263,7 +269,7 @@ struct NoteDetailView: View {
             } label: {
                 Label("¿Idioma equivocado? Volver a transcribir", systemImage: "globe")
             }
-            .disabled(note.allAudioFiles.isEmpty || note.audioState != "present")
+            .disabled(!queue.hasAllAudio(note) || note.pendingLanguage != nil)
         }
         Section("Transcripción") {
             if showTranslation, let tr = note.translations[note.language == "es" ? "en" : "es"] {
@@ -356,7 +362,9 @@ struct NoteDetailView: View {
                 } label: {
                     Label(note.isFavorite ? "Quitar de favoritas" : "Favorita (no se borra el audio)", systemImage: "star")
                 }
-                Button(role: .destructive) { confirmDelete = true } label: { Label("Borrar", systemImage: "trash") }
+                if note.state != NoteState.recording {
+                    Button(role: .destructive) { confirmDelete = true } label: { Label("Borrar", systemImage: "trash") }
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
@@ -381,7 +389,16 @@ private struct ShareItem: Identifiable { let url: URL; var id: String { url.path
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
+        let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        // Al cerrar la hoja, fuera las copias temporales en claro (tmp/export).
+        let exportDir = TempFiles.exportDirectory.standardizedFileURL.path
+        let urls = items.compactMap { $0 as? URL }
+        vc.completionWithItemsHandler = { _, _, _, _ in
+            for u in urls where u.standardizedFileURL.path.hasPrefix(exportDir) {
+                try? FileManager.default.removeItem(at: u)
+            }
+        }
+        return vc
     }
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }

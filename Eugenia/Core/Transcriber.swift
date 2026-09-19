@@ -36,7 +36,16 @@ actor Transcriber {
     /// cola equivocada: la de entrada, que nunca crecía.
     private var fedSeconds: Double = 0
     private var resultEnd: Double = 0
-    var lagSeconds: Double { max(0, fedSeconds - resultEnd) }
+    /// Cuándo llegó el último resultado (reloj de pared).
+    private var lastResultAt = ContinuousClock.now
+    /// En SILENCIO el analizador no devuelve nada y `fedSeconds - resultEnd` crece solo;
+    /// el freno saltaba y, al dejar de alimentar, el retraso ya no podía bajar: el resto
+    /// de la reunión quedaba sin transcribir (revisión 2026-09-18). Si no llega nada en
+    /// 10 s de reloj, es silencio, no atasco.
+    var lagSeconds: Double {
+        if ContinuousClock.now - lastResultAt > .seconds(10) { return 0 }
+        return max(0, fedSeconds - resultEnd)
+    }
 
     /// Buffers que el freno saltó: (tiempo del analizador en que se saltó, segundos
     /// saltados). El analizador no los ve, así que su reloj se queda atrás del reloj
@@ -114,12 +123,21 @@ actor Transcriber {
             }
         }
 
-        try await a.start(inputSequence: inputSequence)
+        do {
+            try await a.start(inputSequence: inputSequence)
+        } catch {
+            // Si no arrancó, `finish()` no debe esperar a unos resultados que no llegarán.
+            builder.finish()
+            resultsTask?.cancel(); resultsTask = nil
+            analyzer = nil; transcriber = nil; inputBuilder = nil
+            throw error
+        }
+        lastResultAt = .now
         Log.event(Log.asr, "analyzer.start", "locale=\(supported.identifier) sr=\(fmt.sampleRate)", caseId: caseId)
         return out
     }
 
-    private func noteResult(end: Double) { resultEnd = max(resultEnd, end) }
+    private func noteResult(end: Double) { resultEnd = max(resultEnd, end); lastResultAt = .now }
 
     /// Alimenta el analizador. Los buffers vienen del `AudioSource`, sea micro o fichero.
     func feed(_ buffer: AVAudioPCMBuffer) {
@@ -135,14 +153,43 @@ actor Transcriber {
 
     func finish() async {
         inputBuilder?.finish()
-        try? await analyzer?.finalizeAndFinishThroughEndOfInput()
         // ESPERAR, no cancelar: al finalizar, el analizador consolida la última frase
         // volátil y la entrega como final. Cancelar aquí la tiraba (revisión 2026-09-18).
-        if analyzer == nil { resultsTask?.cancel() }   // nunca arrancó: nada que drenar
-        _ = await resultsTask?.value
+        // Pero con TOPE: si el analizador se cuelga, "Guardando…" no puede ser eterno.
+        let a = analyzer
+        let rt = resultsTask
+        if a == nil { rt?.cancel() }                   // nunca arrancó: nada que drenar
+        // Carrera sin grupo de tareas: un grupo espera a TODOS sus hijos, también al
+        // colgado, y el tope no serviría de nada.
+        let once = Once()
+        let finishedInTime: Bool = await withCheckedContinuation { c in
+            Task {
+                try? await a?.finalizeAndFinishThroughEndOfInput()
+                _ = await rt?.value
+                if once.claim() { c.resume(returning: true) }
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(30))
+                if once.claim() { c.resume(returning: false) }
+            }
+        }
+        if !finishedInTime { Log.event(Log.asr, "analyzer.finish.timeout") }
+        rt?.cancel()
         inputBuilder = nil
         analyzer = nil
         transcriber = nil
         Log.event(Log.asr, "analyzer.finish")
+    }
+}
+
+/// Se puede reclamar una sola vez, desde cualquier hilo.
+final class Once: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func claim() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if done { return false }
+        done = true
+        return true
     }
 }

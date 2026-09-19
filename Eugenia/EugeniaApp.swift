@@ -12,20 +12,21 @@ struct EugeniaApp: App {
     init() {
         // Antes de terminar de arrancar: iOS exige registrar las tareas de fondo aquí.
         ProcessingQueue.registerBackgroundTask()
+        // Copias temporales en claro que quedaron de una sesión anterior.
+        TempFiles.cleanAtLaunch()
         UNUserNotificationCenter.current().delegate = NotificationRouter.shared
         Notifier.registerCategories()
         AppLock.shared.lockIfNeeded()
     }
 
+    private func updateLockOverlay(_ phase: ScenePhase? = nil) {
+        let phase = phase ?? scenePhase
+        LockOverlay.shared.update(visible: lock.locked || phase != .active && settings.faceIDLock)
+    }
+
     var body: some Scene {
         WindowGroup {
-            ZStack {
-                RootView()
-                if lock.locked || scenePhase != .active && settings.faceIDLock {
-                    // Tapa el contenido: también en la captura del selector de apps.
-                    LockScreen()
-                }
-            }
+            RootView()
             .environmentObject(store)
             .environmentObject(settings)
             .environmentObject(router)
@@ -47,21 +48,27 @@ struct EugeniaApp: App {
                 Log.event(Log.diag, "app.ready",
                           "llm=\(Summarizer.availabilityDescription()) notes=\(Store.shared.notes.count)")
             }
+            // La tapa del bloqueo va en su propia ventana (LockOverlay): así cubre
+            // también las hojas y la captura del selector de apps.
+            .onChange(of: lock.locked, initial: true) { _, _ in updateLockOverlay() }
+            .onChange(of: settings.faceIDLock) { _, _ in updateLockOverlay() }
             .onOpenURL { url in
                 // "Abrir en Eugenia" desde Archivos, Mail, WhatsApp… (CFBundleDocumentTypes).
                 if url.isFileURL { router.pendingImportURL = url }
             }
             .onChange(of: scenePhase) { _, phase in
+                updateLockOverlay(phase)
                 switch phase {
                 case .background:
                     AppLock.shared.lockIfNeeded()
                 case .active:
-                    Task { await AppLock.shared.unlock() }
-                    // Apple Intelligence activado mientras tanto: reintentar los resúmenes
-                    // que fallaron solo por eso.
+                    Task { await AppLock.shared.autoUnlock() }
+                    // Apple Intelligence activado mientras tanto: reintentar SOLO los
+                    // resúmenes que fallaron por eso (antes, cualquier fallo se
+                    // reprocesaba en cada vuelta a la app: batería y calor para nada).
                     if Summarizer.isAvailable {
                         for n in Store.shared.notes where n.state == NoteState.failed
-                            && n.summaryOverview.isEmpty && !n.transcript.isEmpty {
+                            && n.failureCode == "modelUnavailable" && !n.transcript.isEmpty {
                             ProcessingQueue.shared.retry(n.id)
                         }
                     }
@@ -71,20 +78,5 @@ struct EugeniaApp: App {
                 }
             }
         }
-    }
-}
-
-private struct LockScreen: View {
-    var body: some View {
-        ZStack {
-            Rectangle().fill(.background).ignoresSafeArea()
-            VStack(spacing: 16) {
-                Image(systemName: "lock.fill").font(.largeTitle)
-                Text("Eugenia está bloqueada")
-                Button("Desbloquear") { Task { await AppLock.shared.unlock() } }
-                    .buttonStyle(.borderedProminent)
-            }
-        }
-        .accessibilityIdentifier("lock-screen")
     }
 }

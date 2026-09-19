@@ -94,7 +94,16 @@ final class SearchIndex {
     }
 
     private func ensure(_ note: Note) {
-        let stamp = note.segments.count &+ note.transcript.count &+ note.summaryOverview.count &+ note.speakerNames.count
+        // Huella del contenido que se indexa. Antes era una suma de longitudes: renombrar
+        // la reunión o a un hablante no la cambiaba y la búsqueda enseñaba lo viejo.
+        var h = Hasher()
+        h.combine(note.title)
+        h.combine(note.transcript)
+        h.combine(note.summaryOverview)
+        h.combine(note.speakerNames)
+        h.combine(note.segments.count)
+        h.combine(note.actionItems.map(\.text))
+        let stamp = h.finalize()
         if stamps[note.id] == stamp, passages[note.id] != nil { return }
         passages[note.id] = Self.makePassages(for: note)
         vectors[note.id] = nil

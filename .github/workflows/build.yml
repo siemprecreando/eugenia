@@ -35,9 +35,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Sin el token guardado en .git/config: nada de lo que corre después lo necesita.
+          persist-credentials: false
 
-      - name: Instalar XcodeGen
-        run: brew install xcodegen
+      - name: Instalar XcodeGen (versión fija, SHA-256)
+        run: ./scripts/install-xcodegen.sh
+
+      - name: Modelos de hablantes (commit fijo, SHA-256)
+        run: ./scripts/fetch-diarizer-models.sh
 
       - name: Generar el proyecto
         run: xcodegen generate
@@ -266,8 +272,10 @@ jobs:
             --predicate 'subsystem == "com.eugenia.app"' --style compact || true
 
   ipa:
+    # Solo lectura: este trabajo ejecuta herramientas y compila. Publicar va aparte,
+    # en `release`, que no compila nada (revisión de supply chain 2026-09-18).
     permissions:
-      contents: write
+      contents: read
     # macos-26, NO macos-15. El primer intento falló con "no such module
     # 'FoundationModels'": la imagen macos-15 trae un Xcode cuyo SDK es iOS 18, y
     # FoundationModels y SpeechAnalyzer solo existen a partir del SDK de iOS 26.
@@ -276,6 +284,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Sin el token guardado en .git/config: nada de lo que corre después lo necesita.
+          persist-credentials: false
 
       # Diagnóstico barato que se queda para siempre: cuando un build falle por el
       # SDK, esta salida dice en dos segundos si el problema es la imagen o el código.
@@ -306,8 +317,11 @@ jobs:
           print("ok: Release sin file sharing")
           PY
 
-      - name: Instalar XcodeGen
-        run: brew install xcodegen
+      - name: Instalar XcodeGen (versión fija, SHA-256)
+        run: ./scripts/install-xcodegen.sh
+
+      - name: Modelos de hablantes (commit fijo, SHA-256)
+        run: ./scripts/fetch-diarizer-models.sh
 
       - name: Generar el proyecto
         run: xcodegen generate
@@ -360,6 +374,10 @@ jobs:
           # La extensión de widgets (Live Activity, control del Centro de Control) tiene
           # que ir DENTRO del .app; si no, la Live Activity no aparece y nadie lo nota.
           test -d "$APP/PlugIns/EugeniaWidgets.appex" || { echo "Falta PlugIns/EugeniaWidgets.appex"; ls -la "$APP"; exit 1; }
+          # Los modelos de hablantes van dentro (la app no los descarga): sin ellos la
+          # separación de hablantes falla en el teléfono.
+          test -f "$APP/DiarizerModels/speaker-diarization-coreml/Segmentation.mlmodelc/weights/weight.bin" \
+            || { echo "Faltan los modelos de hablantes en el .app"; exit 1; }
           # El commit viaja dentro de la app: el informe de diagnóstico lo incluye,
           # así que un fallo siempre se puede atribuir a una versión concreta.
           /usr/libexec/PlistBuddy -c "Add :EugeniaCommit string ${GITHUB_SHA}" "$APP/Info.plist" || \
@@ -392,16 +410,37 @@ jobs:
             Eugenia.dSYM.zip
           if-no-files-found: error
 
-      # Suma de comprobación publicada junto al .ipa: permite verificar a mano que lo
-      # que se instala es lo que compiló CI. El dSYM NO se publica en la Release (el
-      # repo es público y daría símbolos completos a cualquiera): queda solo como
-      # artefacto de CI, que caduca.
-      - name: SHA256SUMS
-        run: shasum -a 256 Eugenia.ipa | tee SHA256SUMS
+  # Publicar: solo en etiquetas, solo si las pruebas pasaron, y en un trabajo que NO
+  # compila ni ejecuta herramientas — descarga el .ipa ya hecho y lo publica. Es el
+  # único con permiso de escritura.
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [test, ipa]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write        # atestación de procedencia
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: eugenia-${{ github.sha }}
 
-      # Acción de terceros ANCLADA A SHA (v2). Es la única con permiso de escritura.
-      - name: Publicar Release (solo en tags)
-        if: startsWith(github.ref, 'refs/tags/')
+      # Suma de comprobación junto al .ipa. El dSYM NO se publica (el repo es
+      # público y daría símbolos completos a cualquiera): queda como artefacto.
+      - name: SHA256SUMS
+        run: sha256sum Eugenia.ipa | tee SHA256SUMS
+
+      # La suma sola no prueba el ORIGEN (va en la misma Release). La atestación sí:
+      # `gh attestation verify Eugenia.ipa -R siemprecreando/eugenia` confirma que
+      # este .ipa salió de este workflow y de este commit.
+      - name: Atestación de procedencia
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: Eugenia.ipa
+
+      - name: Publicar Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |

@@ -164,11 +164,13 @@ enum NoteExporter {
         }
     }
 
-    /// Fichero temporal listo para compartir. Se borra al terminar de compartir o, si
-    /// no, lo limpia el sistema (carpeta tmp).
+    /// Fichero temporal listo para compartir, en `tmp/export`. Se borra al cerrar la
+    /// hoja de compartir (`ShareSheet`) y, si la app muere antes, al arrancar
+    /// (`TempFiles.cleanAtLaunch`).
     static func file(_ n: Note, format: ExportFormat) throws -> URL {
-        let safe = n.title.components(separatedBy: CharacterSet(charactersIn: "/\\:?%*|\"<>")).joined(separator: "-")
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(safe.prefix(60)).\(format.fileExtension)")
+        var safe = n.title.components(separatedBy: CharacterSet(charactersIn: "/\\:?%*|\"<>")).joined(separator: "-")
+        if safe.hasPrefix(".") || safe.isEmpty { safe = "Reunion" + safe }
+        let url = TempFiles.exportDirectory.appendingPathComponent("\(safe.prefix(60)).\(format.fileExtension)")
         let data: Data
         switch format {
         case .pdf: data = pdf(n)
@@ -183,32 +185,44 @@ enum NoteExporter {
 
 // MARK: - Copia cifrada del archivo completo (plan, Fase 4; sustituye a CloudKit)
 
-/// Formato `.eugenia` v1:
-///   "EUGX1" | sal (16) | registros…
+/// Formato `.eugenia` v2 (revisión de seguridad 2026-09-18; el v1 se sigue leyendo):
+///   cabecera = "EUGX2" | KDF (1 byte, 1 = PBKDF2-HMAC-SHA256) | iteraciones (UInt32 BE) | sal (16)
 ///   registro = longitud del nombre (UInt16 BE) | nombre UTF-8 | longitud del bloque
 ///              sellado (UInt64 BE) | AES-GCM combinado (nonce | cifrado | etiqueta)
-/// Clave: PBKDF2-HMAC-SHA256, 210.000 iteraciones, 32 bytes (recomendación OWASP 2023).
-/// Cada fichero va en su propio registro: el audio se procesa trozo a trozo sin cargar
-/// el archivo entero en memoria. El nombre del registro va dentro del bloque autenticado
-/// (datos asociados), así que no se puede renombrar un registro sin que falle.
+///   último registro = "#end", cuyo contenido es el número de registros anteriores.
+/// Datos autenticados de cada registro: cabecera | número de registro | nombre. Así no
+/// se puede quitar, reordenar, cambiar de copia ni cortar el final sin que falle; en
+/// v1 solo se autenticaba el nombre.
+/// Clave: PBKDF2-HMAC-SHA256 con 600.000 iteraciones (OWASP 2023 para SHA-256; las
+/// 210.000 que decía v1 son la cifra de SHA-512). Las iteraciones van en la cabecera:
+/// se podrán subir sin romper copias viejas. Contraseña normalizada (NFC): la misma
+/// escrita con otro teclado da la misma clave.
+/// Cada fichero de audio va en su propio registro; son trozos de 180 s, así que se
+/// cargan de uno en uno sin picos de memoria.
 enum EncryptedArchive {
-    static let magic = Data("EUGX1".utf8)
-    static let iterations: UInt32 = 210_000
+    static let magicV1 = Data("EUGX1".utf8)
+    static let magic = Data("EUGX2".utf8)
+    static let iterationsV1: UInt32 = 210_000
+    static let iterations: UInt32 = 600_000
+    static let minPasswordLength = 12
+    private static let endName = "#end"
 
     enum ArchiveError: Error, CustomStringConvertible {
-        case badFormat, wrongPassword, weakPassword
+        case badFormat, wrongPassword, weakPassword, truncated, randomFailed
         var description: String {
             switch self {
-            case .badFormat: return "El fichero no es una copia de Eugenia o está dañado."
-            case .wrongPassword: return "La contraseña no es correcta."
-            case .weakPassword: return "Usa una contraseña de al menos 8 caracteres."
+            case .badFormat: return String(localized: "El fichero no es una copia de Eugenia o está dañado.")
+            case .wrongPassword: return String(localized: "La contraseña no es correcta.")
+            case .weakPassword: return String(localized: "Usa una contraseña de al menos 12 caracteres.")
+            case .truncated: return String(localized: "La copia está incompleta: le faltan datos al final.")
+            case .randomFailed: return String(localized: "No se pudo generar la clave. Inténtalo de nuevo.")
             }
         }
     }
 
-    static func deriveKey(password: String, salt: Data) -> SymmetricKey {
+    static func deriveKey(password: String, salt: Data, iterations: UInt32) -> SymmetricKey {
         var derived = [UInt8](repeating: 0, count: 32)
-        let pw = Array(password.utf8)
+        let pw = Array(password.precomposedStringWithCanonicalMapping.utf8)
         _ = salt.withUnsafeBytes { saltPtr in
             CCKeyDerivationPBKDF(CCPBKDFAlgorithm(kCCPBKDF2), pw.map { Int8(bitPattern: $0) }, pw.count,
                                  saltPtr.bindMemory(to: UInt8.self).baseAddress, salt.count,
@@ -217,59 +231,101 @@ enum EncryptedArchive {
         return SymmetricKey(data: derived)
     }
 
-    /// Escribe la copia. `files` = (nombre en el archivo, URL local).
-    static func write(to url: URL, password: String, index: Data, files: [(String, URL)]) throws {
-        guard password.count >= 8 else { throw ArchiveError.weakPassword }
+    private static func be<T: FixedWidthInteger>(_ v: T) -> Data { withUnsafeBytes(of: v.bigEndian) { Data($0) } }
+    private static func readBE<T: FixedWidthInteger>(_ d: Data, as: T.Type) -> T {
+        T(bigEndian: d.withUnsafeBytes { $0.loadUnaligned(as: T.self) })
+    }
+    private static func aad(_ header: Data, _ n: UInt32, _ name: Data) -> Data { header + be(n) + name }
+
+    /// Escribe la copia. `files` = (nombre en el archivo, URL local). Devuelve los
+    /// nombres de audio que NO se pudieron leer (para avisar: la copia quedaría
+    /// incompleta sin que nadie lo sepa).
+    @discardableResult
+    static func write(to url: URL, password: String, index: Data, files: [(String, URL)]) throws -> [String] {
+        guard password.precomposedStringWithCanonicalMapping.count >= minPasswordLength else { throw ArchiveError.weakPassword }
         var salt = Data(count: 16)
-        _ = salt.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }
-        let key = deriveKey(password: password, salt: salt)
+        let rc = salt.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }
+        guard rc == errSecSuccess else { throw ArchiveError.randomFailed }
+        let header = magic + Data([1]) + be(iterations) + salt
+        let key = deriveKey(password: password, salt: salt, iterations: iterations)
         FileManager.default.createFile(atPath: url.path, contents: nil,
                                        attributes: [.protectionKey: FileProtectionType.complete])
         let h = try FileHandle(forWritingTo: url)
         defer { try? h.close() }
-        try h.write(contentsOf: magic + salt)
+        try h.write(contentsOf: header)
+        var count: UInt32 = 0
         func record(_ name: String, _ data: Data) throws {
             let nameData = Data(name.utf8)
-            let sealed = try AES.GCM.seal(data, using: key, authenticating: nameData)
+            let sealed = try AES.GCM.seal(data, using: key, authenticating: aad(header, count, nameData))
             guard let combined = sealed.combined else { throw ArchiveError.badFormat }
-            var header = Data()
-            header.append(contentsOf: withUnsafeBytes(of: UInt16(nameData.count).bigEndian) { Array($0) })
-            header.append(nameData)
-            header.append(contentsOf: withUnsafeBytes(of: UInt64(combined.count).bigEndian) { Array($0) })
-            try h.write(contentsOf: header + combined)
+            try h.write(contentsOf: be(UInt16(nameData.count)) + nameData + be(UInt64(combined.count)) + combined)
+            count += 1
         }
         try record("notes.json", index)
+        var skipped: [String] = []
         for (name, file) in files {
-            guard let data = try? Data(contentsOf: file) else { continue }
+            guard let data = try? Data(contentsOf: file) else { skipped.append(name); continue }
             try record("audio/" + name, data)
         }
+        try record(endName, be(count))
+        return skipped
     }
 
-    /// Lee una copia y devuelve el índice y los ficheros descifrados, uno a uno.
+    /// Lee una copia (v2 o v1) y devuelve el índice; los ficheros van a `onFile`.
     static func read(from url: URL, password: String, onFile: (String, Data) throws -> Void) throws -> Data {
         let h = try FileHandle(forReadingFrom: url)
         defer { try? h.close() }
-        guard let head = try h.read(upToCount: 21), head.count == 21, head.prefix(5) == magic else { throw ArchiveError.badFormat }
-        let key = deriveKey(password: password, salt: head.suffix(16))
-        var index: Data?
-        while let lenData = try h.read(upToCount: 2), lenData.count == 2 {
-            let nameLen = Int(UInt16(bigEndian: lenData.withUnsafeBytes { $0.loadUnaligned(as: UInt16.self) }))
-            guard nameLen > 0, nameLen < 1_024,
-                  let nameData = try h.read(upToCount: nameLen), nameData.count == nameLen,
-                  let sizeData = try h.read(upToCount: 8), sizeData.count == 8 else { throw ArchiveError.badFormat }
-            let size = Int(UInt64(bigEndian: sizeData.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }))
-            guard size > 28, size < 2_000_000_000, let blob = try h.read(upToCount: size), blob.count == size else {
+        guard let m = try h.read(upToCount: 5), m.count == 5 else { throw ArchiveError.badFormat }
+        let v2 = m == magic
+        guard v2 || m == magicV1 else { throw ArchiveError.badFormat }
+        let header: Data
+        let key: SymmetricKey
+        if v2 {
+            guard let rest = try h.read(upToCount: 21), rest.count == 21, rest[rest.startIndex] == 1 else {
                 throw ArchiveError.badFormat
             }
+            let iters = readBE(rest.subdata(in: rest.startIndex + 1 ..< rest.startIndex + 5), as: UInt32.self)
+            // Un fichero ajeno no puede pedir una derivación absurda (bloquear la app).
+            guard (100_000...10_000_000).contains(iters) else { throw ArchiveError.badFormat }
+            header = m + rest
+            key = deriveKey(password: password, salt: rest.suffix(16), iterations: iters)
+        } else {
+            guard let salt = try h.read(upToCount: 16), salt.count == 16 else { throw ArchiveError.badFormat }
+            header = m + salt
+            key = deriveKey(password: password, salt: salt, iterations: iterationsV1)
+        }
+        var index: Data?
+        var count: UInt32 = 0
+        var ended = false
+        while let lenData = try h.read(upToCount: 2), lenData.count == 2 {
+            guard !ended else { throw ArchiveError.badFormat }   // nada después del final
+            let nameLen = Int(readBE(lenData, as: UInt16.self))
+            guard nameLen > 0, nameLen < 1_024,
+                  let nameData = try h.read(upToCount: nameLen), nameData.count == nameLen,
+                  let sizeData = try h.read(upToCount: 8), sizeData.count == 8 else { throw ArchiveError.truncated }
+            let size = readBE(sizeData, as: UInt64.self)
+            guard size > 28, size < 200_000_000 else { throw ArchiveError.badFormat }
+            guard let blob = try h.read(upToCount: Int(size)), blob.count == Int(size) else { throw ArchiveError.truncated }
             let plain: Data
             do {
-                plain = try AES.GCM.open(AES.GCM.SealedBox(combined: blob), using: key, authenticating: nameData)
+                plain = try AES.GCM.open(AES.GCM.SealedBox(combined: blob), using: key,
+                                         authenticating: v2 ? aad(header, count, nameData) : nameData)
             } catch {
-                throw index == nil ? ArchiveError.wrongPassword : ArchiveError.badFormat
+                throw count == 0 ? ArchiveError.wrongPassword : ArchiveError.badFormat
             }
             let name = String(decoding: nameData, as: UTF8.self)
-            if name == "notes.json" { index = plain } else { try onFile(name, plain) }
+            if v2 && name == endName {
+                guard plain.count == 4, readBE(plain, as: UInt32.self) == count else { throw ArchiveError.badFormat }
+                ended = true
+            } else if name == "notes.json" {
+                guard index == nil else { throw ArchiveError.badFormat }
+                index = plain
+            } else {
+                try onFile(name, plain)
+            }
+            count += 1
         }
+        if v2 && !ended { throw ArchiveError.truncated }
         guard let index else { throw ArchiveError.badFormat }
         return index
     }

@@ -16,12 +16,13 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: "26.0"
 
 # Única dependencia externa: FluidAudio (Apache 2.0) para separar hablantes en el
-# Neural Engine (plan 5.3). Versión EXACTA: una actualización no entra sin revisarla
-# (revisión de supply chain 2026-09-18: sin telemetría; solo descarga sus modelos).
+# Neural Engine (plan 5.3). Anclada al COMMIT de la etiqueta v0.15.7, no a la
+# etiqueta: una etiqueta se puede mover (revisión de supply chain 2026-09-18). Sin
+# telemetría; sus modelos van DENTRO de la app (scripts/fetch-diarizer-models.sh).
 packages:
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio.git
-    exactVersion: 0.15.7
+    revision: 41540ea237350afe5117a082b5c28eda642d0612   # v0.15.7
 
 schemes:
   Eugenia:
@@ -41,6 +42,11 @@ targets:
     sources:
       - path: Eugenia
       - path: Shared
+      # Modelos de hablantes, verificados por SHA-256 (fetch-diarizer-models.sh). Como
+      # carpeta tal cual: los .mlmodelc ya vienen compilados.
+      - path: DiarizerModels
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: FluidAudio
       - target: EugeniaWidgets

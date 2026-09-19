@@ -30,6 +30,9 @@ final class AppSettings: ObservableObject {
     @Published var calendarSuggestions: Bool { didSet { d.set(calendarSuggestions, forKey: "calendarSuggestions") } }
     @Published var voiceprintsEnabled: Bool { didSet { d.set(voiceprintsEnabled, forKey: "voiceprintsEnabled") } }
     @Published var diarizationEnabled: Bool { didSet { d.set(diarizationEnabled, forKey: "diarizationEnabled") } }
+    /// Títulos de reunión fuera de la pantalla bloqueada (Live Activity y avisos): un
+    /// título de calendario puede ser justo lo delicado.
+    @Published var hideTitlesOnLockScreen: Bool { didSet { d.set(hideTitlesOnLockScreen, forKey: "hideTitlesOnLockScreen") } }
 
     private init() {
         recordingLanguage = d.string(forKey: "recordingLanguage") ?? "auto"
@@ -52,5 +55,6 @@ final class AppSettings: ObservableObject {
         calendarSuggestions = d.object(forKey: "calendarSuggestions") as? Bool ?? false
         voiceprintsEnabled = d.object(forKey: "voiceprintsEnabled") as? Bool ?? false
         diarizationEnabled = d.object(forKey: "diarizationEnabled") as? Bool ?? true
+        hideTitlesOnLockScreen = d.object(forKey: "hideTitlesOnLockScreen") as? Bool ?? false
     }
 }

@@ -36,17 +36,18 @@ enum Notifier {
         c.title = String(localized: "Resumen listo")
         // Solo el TÍTULO de la reunión, nunca contenido: la notificación se ve en la
         // pantalla bloqueada.
-        c.body = note.title
+        c.body = AppSettings.shared.hideTitlesOnLockScreen ? String(localized: "Una reunión está lista.") : note.title
         c.categoryIdentifier = summaryCategory
         c.userInfo = ["noteID": note.id.uuidString]
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: "summary-\(note.id.uuidString)", content: c, trigger: nil))
     }
 
+    @MainActor
     static func meetingSoon(title: String, eventID: String, at date: Date) {
         let c = UNMutableNotificationContent()
         c.title = String(localized: "¿Grabar la reunión?")
-        c.body = title
+        c.body = AppSettings.shared.hideTitlesOnLockScreen ? String(localized: "Empieza una reunión del calendario.") : title
         c.categoryIdentifier = meetingCategory
         c.userInfo = ["eventID": eventID, "title": title]
         let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
@@ -100,6 +101,10 @@ final class AppRouter: ObservableObject {
     @Published var pendingImportURL: URL?
     var pendingTitle: String?
     var pendingEventID: String?
+    /// Cambia en cada petición de grabar. Si la pantalla de grabación YA estaba abierta
+    /// (lo normal tras parar la anterior), `showRecorder` no cambia y la petición de
+    /// Siri, el botón de acción o el aviso se perdía (revisión 2026-09-18).
+    @Published private(set) var recordRequest = UUID()
 
     func open(noteID: UUID, at: Double? = nil) {
         path = [NoteRoute(id: noteID, at: at)]
@@ -109,6 +114,7 @@ final class AppRouter: ObservableObject {
         pendingTitle = title
         pendingEventID = eventID
         showRecorder = true
+        recordRequest = UUID()
     }
 }
 

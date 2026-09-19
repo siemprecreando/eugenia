@@ -15,6 +15,7 @@ struct RootView: View {
     @State private var showingSettings = false
     @State private var showingAsk = false
     @State private var photoItem: PhotosPickerItem?
+    @ObservedObject private var lock = AppLock.shared
     @State private var importError: String?
     @State private var importing = false
     @State private var movingNote: Note?
@@ -67,21 +68,28 @@ struct RootView: View {
                 defer { importing = false; photoItem = nil }
                 do {
                     guard let movie = try await item.loadTransferable(type: MovieFile.self) else { return }
+                    // La copia temporal del vídeo es la reunión entera: fuera al terminar.
+                    defer { try? FileManager.default.removeItem(at: movie.url) }
                     _ = try await Importer.importFile(movie.url, folder: folderFilter ?? "")
                 } catch {
                     importError = (error as? CustomStringConvertible)?.description ?? Recorder.userMessage(for: error)
                 }
             }
         }
-        .onChange(of: router.pendingImportURL) { _, url in
-            guard let url else { return }
-            router.pendingImportURL = nil
-            runImport([url])
-        }
+        // "Abrir en Eugenia" con la app bloqueada: se espera a Face ID. Un fichero
+        // ajeno no se procesa mientras nadie ha demostrado ser el dueño.
+        .onChange(of: router.pendingImportURL) { _, _ in importPendingIfUnlocked() }
+        .onChange(of: lock.locked) { _, _ in importPendingIfUnlocked() }
         .alert("No se pudo importar", isPresented: Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })) {
             Button("Aceptar", role: .cancel) {}
         } message: { Text(importError ?? "") }
         .overlay { if importing { ProgressView("Importando…").padding().background(.regularMaterial, in: .rect(cornerRadius: 12)) } }
+    }
+
+    private func importPendingIfUnlocked() {
+        guard let url = router.pendingImportURL, !lock.locked else { return }
+        router.pendingImportURL = nil
+        runImport([url])
     }
 
     private func runImport(_ urls: [URL]) {
@@ -127,7 +135,9 @@ struct RootView: View {
                 }
                 .accessibilityIdentifier("note-\(note.title)")
                 .swipeActions(edge: .trailing) {
-                    Button(role: .destructive) { store.delete(note) } label: { Label("Borrar", systemImage: "trash") }
+                    if note.state != NoteState.recording {
+                        Button(role: .destructive) { store.delete(note) } label: { Label("Borrar", systemImage: "trash") }
+                    }
                     Button { movingNote = note } label: { Label("Carpeta", systemImage: "folder") }.tint(.indigo)
                 }
                 .swipeActions(edge: .leading) {
@@ -194,7 +204,7 @@ struct MovieFile: Transferable {
     let url: URL
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(contentType: .movie) { SentTransferredFile($0.url) } importing: { received in
-            let copy = FileManager.default.temporaryDirectory.appendingPathComponent(received.file.lastPathComponent)
+            let copy = TempFiles.root.appendingPathComponent("import-" + received.file.lastPathComponent)
             try? FileManager.default.removeItem(at: copy)
             try FileManager.default.copyItem(at: received.file, to: copy)
             return MovieFile(url: copy)

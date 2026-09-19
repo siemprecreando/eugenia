@@ -18,6 +18,7 @@ enum Importer {
         case noAudioTrack
         case emptyDocument
         case exportFailed
+        case tooLarge
 
         var description: String {
             switch self {
@@ -29,6 +30,8 @@ enum Importer {
                 return "No se encontró texto en el documento (ni con reconocimiento de texto)."
             case .exportFailed:
                 return "No se pudo extraer el audio del fichero."
+            case .tooLarge:
+                return "El documento es demasiado grande (máximo 500 páginas o 20 MB de texto)."
             }
         }
     }
@@ -46,6 +49,9 @@ enum Importer {
             return saveDocument(title: title, text: text, folder: folder)
         }
         if type.conforms(to: .plainText) || type.conforms(to: .text) || url.pathExtension.lowercased() == "md" {
+            // Un fichero ajeno ("Abrir en Eugenia") no puede tumbar la app por memoria.
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            guard size <= maxTextBytes else { throw ImportError.tooLarge }
             let text = try String(contentsOf: url, encoding: .utf8)
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ImportError.emptyDocument }
             return saveDocument(title: title, text: text, folder: folder)
@@ -108,17 +114,29 @@ enum Importer {
         return r.dominantLanguage == .english ? "en" : "es"
     }
 
+    /// Límites para documentos ajenos (revisión de seguridad 2026-09-18).
+    static let maxPages = 500
+    static let maxTextBytes = 20_000_000
+    /// Lado mayor de la imagen para OCR. Sin tope, una página declarada de 14.400 pt
+    /// se renderizaba a ~28.800 px de lado: >3 GB y la app muerta.
+    static let maxOCRPixels: CGFloat = 3_000
+
     /// Texto de cada página; si una página no tiene texto seleccionable, OCR.
     nonisolated static func readPDF(_ url: URL) throws -> String {
         guard let doc = PDFDocument(url: url) else { throw ImportError.unsupported("pdf") }
+        guard doc.pageCount <= maxPages else { throw ImportError.tooLarge }
         var pages: [String] = []
+        var total = 0
         for i in 0..<doc.pageCount {
+            guard total <= maxTextBytes else { throw ImportError.tooLarge }
             guard let page = doc.page(at: i) else { continue }
             let text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if text.count > 20 {
                 pages.append(text)
+                total += text.utf8.count
             } else if let ocr = ocr(page), !ocr.isEmpty {
                 pages.append(ocr)
+                total += ocr.utf8.count
             }
         }
         let all = pages.joined(separator: "\n\n")
@@ -128,7 +146,9 @@ enum Importer {
 
     nonisolated private static func ocr(_ page: PDFPage) -> String? {
         let bounds = page.bounds(for: .mediaBox)
-        let scale: CGFloat = 2
+        let longest = max(bounds.width, bounds.height)
+        guard longest > 0 else { return nil }
+        let scale = min(2, maxOCRPixels / longest)
         let image = page.thumbnail(of: CGSize(width: bounds.width * scale, height: bounds.height * scale), for: .mediaBox)
         guard let cg = image.cgImage else { return nil }
         let request = VNRecognizeTextRequest()

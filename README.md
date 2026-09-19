@@ -8,33 +8,25 @@ dispositivo**. Plan completo en [`../plan-summary-ai-iphone.md`](../plan-summary
 - **Se instala** con SideStore, que firma en el propio teléfono con un Apple ID gratuito.
 - **Se prueba** desde Linux con `pymobiledevice3`, contra el teléfono real.
 
-> ### Estado: INSTALADA Y ARRANCA EN EL IPHONE (2026-09-18). Bucle de pruebas en verde.
+> ### Estado (2026-09-18): v0.2.0 — todas las fases del plan implementadas
 >
-> v0.1.1 instalada con SideStore en el iPhone 17e (iOS 26.6.1). `smoke` en verde
-> desde Linux: empujar plan → lanzar la app → recoger informe, sin tocar el teléfono.
-> El informe dice `IA unavailable(appleIntelligenceNotEnabled)`: hay que activar
-> Apple Intelligence en el teléfono antes de probar resúmenes. **Sin probar aún:**
-> grabar, transcribir y resumir en el dispositivo (no hay corpus de audio todavía).
+> - **En el iPhone:** v0.1.2 instalada con SideStore y `smoke` en verde. La v0.2.0 se
+>   publica como Release cuando CI (compilación + 45 pruebas unitarias + 8 de
+>   interfaz) está en verde.
+> - **Repositorio PÚBLICO y build Debug**, a propósito y de forma temporal: se pasa a
+>   privado y a Release cuando Sergio dé la app por probada.
+> - **Qué hace la v0.2:** grabación robusta (se guarda cada 10 s, se reanuda tras
+>   llamadas y cortes, recupera grabaciones interrumpidas), transcripción con marcas de
+>   tiempo, **quién habla** (separación de hablantes y, si se activa, reconocimiento de
+>   voces conocidas), resumen por plantillas con tareas que siguen a su dueño,
+>   preguntas a una reunión o a todas, búsqueda, carpetas, exportar (texto, Markdown,
+>   PDF, JSON) y copia cifrada, importar audio/vídeo/PDF/texto, Live Activity y botón
+>   en el Centro de Control, atajos de Siri, bloqueo con Face ID, sugerencias desde el
+>   calendario, retención de audio configurable, interfaz en español e inglés.
+> - **Sin probar en el teléfono:** resumen (hace falta activar Apple Intelligence),
+>   separación de hablantes con audio real, y batería/temperatura en reuniones largas.
 >
-> El build pasa en GitHub Actions (`macos-26`, Xcode 26.6, SDK iOS 26.5) y produce un
-> `.ipa` con un binario arm64 de dispositivo y su dSYM. Hicieron falta **cuatro
-> rondas**:
->
-> 1. `no such module 'FoundationModels'` — la imagen `macos-15` trae el SDK de iOS 18.
->    Era el entorno, no el código.
-> 2. Un único error de Swift: `.completeFileProtectionUnlessOpen`, que yo había
->    escrito con las palabras en otro orden. Todo lo demás compiló a la primera,
->    incluidos `AssetInventory`, `SpeechAnalyzer` y los macros `@Generable`/`@Guide`,
->    que eran los puntos que más dudas daban.
-> 3. Verde, pero el `.ipa` venía partido en un `debug.dylib` y **sin dSYM** — y aun
->    así salía verde. Corregido y ahora el build falla si el dSYM no aparece.
-> 4. Verde y correcto.
->
-> **Lo que sigue sin estar probado es todo lo que importa:** que la app arranque, que
-> grabe, que `SpeechTranscriber` transcriba y que `FoundationModels` resuma. Que
-> compile solo significa que los tipos encajan. El siguiente paso real es el spike 8
-> del plan — instalar con SideStore y ver si `./scripts/devtest.sh smoke` cierra el
-> bucle.
+> El historial de cómo se llegó al primer build verde está en git.
 
 ---
 
@@ -132,27 +124,31 @@ python3 scripts/afc.py push corpus/es-sala-4personas-2m.m4a \
 ## Qué hay dentro
 
 ```
-project.yml                  proyecto XcodeGen (no hay .pbxproj que mantener a mano)
-.github/workflows/build.yml  CI: comprueba entitlements, compila sin firmar, empaqueta
-scripts/
-  check-entitlements.py      rechaza iCloud / App Groups / push antes de compilar
-  install-sidestore.sh       pone SideStore en el teléfono vía iloader (solo la 1ª vez)
-  make-icon.py               dibuja el icono (Resources/Assets.xcassets/AppIcon)
-  setup-device.sh            la conexión de una sola vez
-  devtest.sh                 el bucle: lanzar, observar, recoger, diagnosticar
-  devtest-container.sh       lo mismo, dentro del contenedor devtools (Bazzite)
-  devtools/Containerfile     python + pymobiledevice3
-  afc.py                     acceso a Documents/ de la app por house_arrest
+project.yml                  proyecto XcodeGen: app + extensión de widgets (Live Activity, Control)
+.github/workflows/build.yml  CI: entitlements, compila sin firmar, pruebas, capturas, Release en tags
+scripts/                     instalar SideStore, bucle de pruebas contra el iPhone, icono
 suites/                      planes de prueba que consume el DiagnosticsRunner
+Shared/RecordingActivity.swift   lo que comparten app y widget (Live Activity, intents)
+Widgets/                     Live Activity con Dynamic Island y el botón "Grabar" del Control Center
 Eugenia/
-  Core/Log.swift             os_log disciplinado. Ojo con la redacción por defecto
-  Core/AudioSource.swift     micrófono | fichero — el requisito que hace probable la app
-  Core/Transcriber.swift     SpeechAnalyzer + SpeechTranscriber
-  Core/Summarizer.swift      FoundationModels, map-reduce con acarreo de estado
-  Core/Recorder.swift        orquestación; el audio a disco SIEMPRE primero
-  Core/Store.swift           persistencia en JSON + ficheros
-  Diagnostics/               el ejecutor de pruebas que vive dentro de la app
-  UI/                        tres pantallas: biblioteca, grabación, detalle
+  Core/Recorder.swift        máquina de estados de la grabación; el audio a disco SIEMPRE primero
+  Core/AudioSource.swift     micrófono (perfiles, reanudación tras interrupciones) | fichero
+  Core/AudioFileWriter.swift audio en trozos de 180 s: un corte no pierde más que eso
+  Core/Transcriber.swift     SpeechAnalyzer + SpeechTranscriber, con marcas de tiempo
+  Core/ProcessingQueue.swift cola persistente: transcribir → hablantes → resumir → indexar
+  Core/Diarization.swift     quién habla (FluidAudio) y huellas de voz opcionales
+  Core/Summarizer.swift      FoundationModels, map-reduce con puntos de control; plantillas
+  Core/SearchIndex.swift     búsqueda por palabras + por significado
+  Core/Store.swift           persistencia; protegida contra un índice corrupto
+  Core/Models.swift          el modelo de datos (compatible hacia atrás con v0.1)
+  Core/Exporter.swift        texto, Markdown, PDF, JSON "eugenia.note/1", archivo cifrado EUGX1
+  Core/Backup.swift          copia y restauración (fusiona por id, no pisa)
+  Core/Importer.swift        audio/vídeo, PDF (con OCR), texto
+  Core/Services.swift        notificaciones, atajos (CRM), retención de audio
+  System/                    App Intents, calendario, Face ID, Live Activity
+  Diagnostics/               el ejecutor de pruebas que vive dentro de la app (solo Debug)
+  UI/                        lista, grabación, detalle, preguntar, ajustes, bienvenida
+  Resources/en.lproj/        traducción al inglés (el español es el idioma base)
 ```
 
 ## Qué se puede probar sin el teléfono, y qué no
@@ -162,9 +158,9 @@ CI corre en `macos-26` con simulador. Esto es lo medido, no lo supuesto:
 | | Estado |
 |---|---|
 | Que la app compile y produzca un `.ipa` arm64 con dSYM | ✅ en cada push |
-| Pruebas unitarias: WER, troceado, contrato JSON, persistencia, backlog | ✅ 5 suites |
+| Pruebas unitarias: WER, troceado, tareas, hablantes, búsqueda, exportar, cifrado, persistencia | ✅ 45 pruebas |
 | Que la app **arranque** sin reventar | ✅ en el simulador |
-| Que la app **se pueda usar**: lista, detalle, grabación | ✅ 3 pruebas de interfaz |
+| Que la app **se pueda usar**: lista, detalle, grabación, ajustes, búsqueda, preguntar, bienvenida, inglés | ✅ 8 pruebas de interfaz |
 | **Ver la interfaz** desde Linux | ✅ capturas publicadas como artefacto |
 | El bucle completo: empujar plan → lanzar → recoger informe | ✅ el contenedor del simulador hace de AFC |
 | La traza `os_log` con `%{public}s` | ✅ legible desde fuera |
@@ -181,6 +177,13 @@ como artefacto `capturas-<sha>`. Se bajan con:
 Cubre el hueco entre *compila* y *se puede usar*: un `@EnvironmentObject` que falta
 compila perfectamente y tira la app en el primer render. Lo que **no** cubre: audio,
 transcripción y resumen. Eso es el teléfono.
+
+> **Trampa (v0.2):** el simulador de CI arranca en **inglés**. Mientras la app solo
+> estaba en español daba igual; con la traducción al inglés, las pruebas que buscan
+> "Ajustes" o "Sin reuniones todavía" dejaron de encontrarlos. Las pruebas fijan el
+> idioma con `-AppleLanguages (es)` y una prueba aparte comprueba el inglés.
+> Y `upload-artifact` rechaza nombres con comillas o `:`: los adjuntos de XCTest los
+> traen, así que el paso de extraer capturas los sanea.
 
 Los datos de muestra (`--ui-demo`) viven en memoria y no tocan el disco. La reunión
 larga es la del spike 4b, para que la captura del detalle enseñe si la pantalla sabe
@@ -285,28 +288,87 @@ de seguridad**. Los que merecen quedar escritos:
 | S1 | `Log.failure` volcaba `String(describing: error)`, y un error de `FoundationModels` puede llevar dentro el prompt — que es el fragmento de transcripción. **Contenido de reuniones en el syslog**, legible por cualquier ordenador emparejado | **Alta** | Corregido: solo se registra el tipo del error y su dominio/código |
 | S2 | Transcripciones y audio sin clase de protección de datos | Media | Corregido con `.completeUnlessOpen` — **no** `.complete`, que dejaría el fichero ilegible con el teléfono bloqueado y rompería la grabación en segundo plano |
 | S3 | `devtest.sh` escribía en el portátil usando nombres de fichero venidos **del dispositivo**: un artefacto llamado `../../../.ssh/…` habría escrito fuera del directorio | Media | Corregido: se sanea a *basename* y se valida |
-| S4 | `UIFileSharingEnabled` expone **todo** `Documents/`. Con el audio ahí, una build Debug en un teléfono emparejado entregaba las reuniones enteras | Media | Corregido: en `Documents/` solo viven los diagnósticos; audio, transcripciones e índice se movieron a Application Support, que AFC no vende |
-| S5 | `GITHUB_TOKEN` con permisos por defecto y una acción de terceros anclada a una etiqueta mutable (`@v2`) | Baja | `permissions: contents: write` añadido. La etiqueta mutable queda documentada: asumible sin secretos en el repo, hay que anclar a SHA si eso cambia |
+| S4 | `UIFileSharingEnabled` expone **todo** `Documents/`. Con el audio ahí, una build Debug en un teléfono emparejado entregaba las reuniones enteras | Media | Corregido a medias: en `Documents/` solo viven los diagnósticos y el resto va a Application Support. **Pero** una app con firma de desarrollo (la de SideStore) deja leer el contenedor ENTERO a un ordenador emparejado: la defensa real es no emparejar el iPhone con ordenadores ajenos |
+| S5 | `GITHUB_TOKEN` con permisos por defecto y una acción de terceros anclada a una etiqueta mutable (`@v2`) | Baja | Corregido: lectura por defecto, acciones ancladas a SHA, y solo el trabajo `release` (que no compila nada) puede escribir |
 | S6 | El nombre de la suite entraba sin validar en una ruta | Baja | Corregido |
 
-**Lo que la revisión confirmó que está bien:** la app no tiene **ni una sola** llamada
-de red — ni `URLSession`, ni sockets, ni una URL. La tesis "tus reuniones nunca salen
-de tu iPhone" es hoy verificable leyendo el código, no solo confiando en el plan.
+**Red.** La app no hace ninguna llamada de red. Los modelos de separación de
+hablantes (~21 MB) van DENTRO de la app: CI los baja de un commit fijo de Hugging Face
+y comprueba cada fichero con su SHA-256 (`scripts/fetch-diarizer-models.sh`,
+`scripts/diarizer-models.sha256`); la librería se pone en modo sin red.
+
+**Qué puede sacar datos del teléfono** (corregido: antes decía que solo "Enviar al
+CRM", y era falso). Los atajos de Siri/Atajos que devuelven la transcripción o
+exportan una reunión exigen el mismo consentimiento de Ajustes, piden Face ID si el
+bloqueo está activo, y ninguno funciona con el teléfono bloqueado.
 
 **Riesgo residual aceptado:** en Debug, los ficheros de `Documents/diagnostics/`
 —incluidas las transcripciones de las pruebas— sí son accesibles por AFC y desde la
 app Archivos. Es el precio de poder sacar los resultados del teléfono, y por eso el
 corpus de pruebas debe ser audio grabado a propósito, no reuniones reales.
 
+### Segunda revisión (v0.2, 2026-09-18): 24 fallos y 21 hallazgos de seguridad
+
+Dos revisiones independientes por lectura del código. Lo corregido que más importa:
+
+**Habrían perdido reuniones:**
+- **Arrancar con el teléfono bloqueado borraba el índice.** Si iOS abría la app en
+  segundo plano (tarea nocturna, Siri) el índice estaba cifrado; "no se puede leer" se
+  trataba como "no hay reuniones" y el siguiente guardado pisaba todas con una. Ahora
+  el índice usa la protección "hasta el primer desbloqueo", se distingue "no existe"
+  de "no se puede leer" (se bloquea la escritura) y se relee al desbloquear. Lo mismo
+  en las huellas de voz.
+- **Una llamada podía terminar la grabación** en vez de pausarla (los cambios de
+  configuración de audio durante la llamada reiniciaban el micrófono y fallaba).
+- **Tras 30 s de silencio la transcripción en vivo se paraba para siempre**: el freno
+  confundía silencio con atasco. Ahora, 10 s sin resultados = silencio.
+- **"Volver a transcribir" borraba transcripción y resumen antes de tener los
+  nuevos**; si fallaba, la nota quedaba vacía. Ahora se sustituyen solo al terminar bien.
+- **Borrar la reunión que se está grabando** dejaba grabadora, Live Activity y cola
+  rotas. Ya no se ofrece, y parar limpia siempre.
+
+**Otros:** Siri/botón de acción no empezaban a grabar si la pantalla de grabación
+seguía abierta; "Grabar otra" heredaba el título anterior; Face ID en bucle al
+cancelar; empezar a grabar marcaba como fallido el resumen en curso; la cola se
+quedaba parada tras grabar; tareas distintas se fusionaban entre fragmentos del
+resumen; un fallo tardío marcaba como fallida la grabación nueva; la búsqueda no veía
+los renombrados; un arranque fallido dejaba el micrófono activo.
+
+**Seguridad:**
+
+| Hallazgo | Corrección |
+|---|---|
+| El bloqueo de Face ID no tapaba las hojas (preguntar, compartir, grabar) ni su captura en el selector de apps | La tapa es una ventana propia por encima de todo |
+| Siri/Atajos leían reuniones con el teléfono bloqueado y saltándose Face ID | Todos exigen teléfono desbloqueado, piden Face ID si está activo, y transcripción/exportar piden el consentimiento |
+| Copia cifrada: 210.000 iteraciones (cifra de SHA-512, no de SHA-256), sin versión en cabecera, registros que se podían quitar o cortar sin que se notara | Formato EUGX2: 600.000 iteraciones anotadas en la cabecera, cada registro autenticado con su posición y un registro final; contraseña ≥ 12 y normalizada. Las copias EUGX1 se siguen leyendo |
+| Una copia ajena podía colar en su índice el audio de otra nota (y borrarlo después) | Solo se acepta el audio `<id>-NNN.m4a` de la propia nota; el índice se valida antes de mover nada |
+| Copias en claro que quedaban en tmp (exportaciones, vídeo importado, WAV de hablantes) | Se borran al cerrar la hoja de compartir y al arrancar |
+| PDF o texto ajeno podía tumbar la app por memoria | Tope de 500 páginas, 20 MB de texto e imagen de OCR de 3.000 px; "Abrir en Eugenia" espera a Face ID |
+| Modelos de hablantes bajados de una rama que puede cambiar, sin comprobar | Dentro de la app, commit fijo y SHA-256 |
+| CI: `brew install xcodegen` sin anclar y con token de escritura | XcodeGen fijo por SHA-256, sin credenciales guardadas, publicación en un trabajo aparte con atestación de procedencia (`gh attestation verify Eugenia.ipa -R siemprecreando/eugenia`) |
+| FluidAudio anclado por etiqueta | Anclado al commit |
+| Contenedor de pruebas con dependencias sin anclar y acceso a las claves de emparejamiento | Todas las dependencias con versión y SHA-256; emparejamiento en solo lectura; la imagen se reconstruye sola al cambiar |
+| Títulos de reuniones en la pantalla bloqueada | Ajuste "Ocultar títulos en la pantalla bloqueada" |
+| El correo de seguimiento copiado al Portapapeles Universal | Solo en este iPhone y caduca a los 2 min |
+
+**Aceptado y anotado:** con build Debug y firma de desarrollo, un ordenador emparejado
+puede leer todo el contenedor y depurar la app; eso se va con el build Release.
+
+**Regenerar las dependencias ancladas del contenedor:**
+
+    cd scripts/devtools && podman run --rm -v "$PWD":/w:Z -w /w python:3.12@<digest> \
+      bash -c "pip install pip-tools==7.4.1 && pip-compile --generate-hashes --allow-unsafe --strip-extras -o requirements.txt requirements.in"
+
 ---
 
 ## Decisiones que conviene conocer antes de tocar nada
 
-**`SWIFT_VERSION` es 5.0, no 6.** El plan pide Swift 6 con concurrencia estricta, y
+**`SWIFT_VERSION` es 5.0, no 6.** Ojo al subir: el bloque que recibe el audio del
+micrófono se crea en el hilo principal y se llama desde el de audio; en Swift 6 eso
+casca en ejecución. Hay que sacarlo a una función no aislada antes de migrar. El plan pide Swift 6 con concurrencia estricta, y
 ahí es donde hay que llegar. Pero el primer objetivo es un build verde que se pueda
 instalar; pelearse a ciegas con errores de aislamiento de actores, sin compilador
-local y a 10 minutos por intento en CI, es la peor forma de gastar los 200 minutos
-del mes. Se sube a 6 en cuanto el ciclo esté cerrado. Está anotado en `project.yml`.
+local y a 10-15 minutos por intento en CI, es la peor forma de avanzar. Se sube a 6 en cuanto el ciclo esté cerrado. Está anotado en `project.yml`.
 
 **El disparo de las pruebas es un fichero, no un argumento.** Linux escribe
 `Documents/diagnostics/run.json` y luego lanza la app; la app lo ve al arrancar. Así

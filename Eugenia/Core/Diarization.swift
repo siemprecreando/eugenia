@@ -8,15 +8,22 @@ import Foundation
 /// WeSpeaker + VBx) en el Neural Engine. Corre en la cola de enriquecimiento, después
 /// de grabar, nunca a la vez que una grabación (plan 5.7).
 ///
-/// RED: la PRIMERA vez descarga sus modelos de Core ML (~40-80 MB) de Hugging Face,
-/// igual que iOS descarga los de voz. Es tráfico de ENTRADA: no sale nada de la
-/// reunión. Después funciona en modo avión. La librería no tiene telemetría (revisado
-/// en el código de la v0.15.7: solo `ModelRegistry`/`AssetDownloader` usan la red).
+/// RED: NINGUNA. Los modelos (~21 MB) van dentro de la app, bajados en CI de un commit
+/// fijo de Hugging Face y comprobados fichero a fichero por SHA-256
+/// (scripts/fetch-diarizer-models.sh). La librería se pone en modo sin red: si faltara
+/// un modelo, falla en vez de ir a descargarlo de una rama que puede cambiar
+/// (revisión de seguridad 2026-09-18). La librería no tiene telemetría (revisado en el
+/// código de la v0.15.7: solo `ModelRegistry`/`AssetDownloader` usan la red).
 
 struct SpeakerTurn: Codable, Equatable, Sendable {
     var label: String       // "S1", "S2"… por orden de primera aparición
     var start: Double
     var end: Double
+}
+
+enum DiarizerError: Error, CustomStringConvertible {
+    case modelsMissing
+    var description: String { String(localized: "Faltan los modelos de separación de hablantes en la app.") }
 }
 
 enum Diarizer {
@@ -35,7 +42,11 @@ enum Diarizer {
         guard !urls.isEmpty else { return Output(turns: [], embeddings: [:]) }
         let m = manager ?? OfflineDiarizerManager(config: .default)
         if manager == nil {
-            try await m.prepareModels()
+            ModelHub.offlineMode = true
+            guard let bundled = Bundle.main.url(forResource: "DiarizerModels", withExtension: nil) else {
+                throw DiarizerError.modelsMissing
+            }
+            try await m.prepareModels(directory: bundled)
             manager = m
         }
         // Los trozos se procesan como UNA grabación: diarizar cada trozo por separado
@@ -76,7 +87,7 @@ enum Diarizer {
     /// FluidAudio lee por streaming desde disco. Materializarlo en memoria como [Float]
     /// serían ~230 MB por hora de reunión: justo el pico de memoria del riesgo R11.
     nonisolated static func concatenate16k(_ urls: [URL]) throws -> URL {
-        let out = FileManager.default.temporaryDirectory.appendingPathComponent("diar-\(UUID().uuidString).wav")
+        let out = TempFiles.root.appendingPathComponent("diar-\(UUID().uuidString).wav")
         guard let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)
         else { throw AudioSourceError.converterFailed }
         let settings: [String: Any] = [
@@ -86,8 +97,16 @@ enum Diarizer {
             AVLinearPCMBitDepthKey: 16,
             AVLinearPCMIsFloatKey: false
         ]
+        // Es la reunión entera sin cifrar por la app: se crea vacío con protección
+        // ANTES de escribir audio (los atributos de protección se heredan del
+        // fichero, no del directorio temporal).
+        FileManager.default.createFile(atPath: out.path, contents: nil,
+                                       attributes: [.protectionKey: FileProtectionType.completeUnlessOpen])
         let writer = try AVAudioFile(forWriting: out, settings: settings,
                                      commonFormat: .pcmFormatFloat32, interleaved: false)
+        // Por si AVAudioFile recreó el fichero en vez de reutilizarlo.
+        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUnlessOpen],
+                                               ofItemAtPath: out.path)
         let converter = BufferConverter()
         for url in urls {
             guard let file = try? AVAudioFile(forReading: url) else { continue }
@@ -159,15 +178,25 @@ final class VoiceprintStore: ObservableObject {
     /// Por encima de este coseno, es la misma persona.
     static let threshold: Float = 0.72
 
-    private init() {
-        if let data = try? Data(contentsOf: url), let p = try? JSONDecoder().decode([Person].self, from: data) {
-            people = p
-        }
+    /// Si el fichero existe pero no se pudo leer (teléfono bloqueado), `people` vacío
+    /// NO significa "no hay huellas": guardar encima las borraría. Se reintenta la
+    /// lectura antes de cada uso y no se escribe hasta haberlo leído.
+    private var loaded = false
+
+    private init() { ensureLoaded() }
+
+    private func ensureLoaded() {
+        guard !loaded else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else { loaded = true; return }
+        guard let data = try? Data(contentsOf: url) else { return }
+        people = (try? JSONDecoder().decode([Person].self, from: data)) ?? []
+        loaded = true
     }
 
     /// Guarda (o refina, promediando) la huella de `name`.
     func enroll(name: String, embedding: [Float]) {
         guard AppSettings.shared.voiceprintsEnabled, !name.isEmpty, !embedding.isEmpty else { return }
+        ensureLoaded()
         if let i = people.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }),
            people[i].embedding.count == embedding.count {
             let n = Float(people[i].samples)
@@ -182,6 +211,7 @@ final class VoiceprintStore: ObservableObject {
     /// Etiqueta de esta reunión → nombre conocido.
     func match(embeddings: [String: [Float]]) -> [String: String] {
         guard AppSettings.shared.voiceprintsEnabled else { return [:] }
+        ensureLoaded()
         var out: [String: String] = [:]
         var used: Set<UUID> = []
         for (label, e) in embeddings {
@@ -205,6 +235,7 @@ final class VoiceprintStore: ObservableObject {
     }
 
     private func save() {
+        guard loaded else { Log.event(Log.storage, "voiceprints.save.blocked"); return }
         guard let data = try? JSONEncoder().encode(people) else { return }
         try? data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
         Store.shared.excludeFromBackup(url)

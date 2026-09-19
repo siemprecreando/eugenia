@@ -8,3 +8,5 @@ run/
 .DS_Store
 __pycache__/
 *.pyc
+DiarizerModels/
+dist/

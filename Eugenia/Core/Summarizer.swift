@@ -250,14 +250,26 @@ struct Summarizer {
             do {
                 let response = try await session.respond(to: Prompt(prompt), generating: ChunkDigest.self)
                 let d = response.content
-                let newMentions = d.mentions.map(Mention.init)
+                // refIds que el modelo NO vio (cerrados o fuera de los 20 del estado)
+                // pueden repetirse para una tarea distinta: se renombran por fragmento
+                // para que el resolvedor no fusione tareas ajenas.
+                let shown = Set(open.map(\.refId))
+                let existing = Set(mentions.map(\.refId))
+                let newMentions = d.mentions.map(Mention.init).map { m -> Mention in
+                    var x = m
+                    if existing.contains(x.refId) && !shown.contains(x.refId) { x.refId = "k\(index)-\(x.refId)" }
+                    return x
+                }
                 let newPoints = d.points.map { Point(text: $0.text, atSeconds: $0.atSeconds) }
                 mentions += newMentions
                 notes.append(d.notes)
                 points += newPoints
                 onCheckpoint(encodeCheckpoint(hash: hash, notes: d.notes, mentions: newMentions, points: newPoints))
                 Log.event(Log.summarize, "map.chunk", "i=\(index) mentions=\(newMentions.count)")
+            } catch is CancellationError {
+                throw CancellationError()        // grabación nueva: vuelve a la cola, no "falla"
             } catch {
+                if Task.isCancelled { throw CancellationError() }
                 // Un fragmento que falla no tira el resumen entero; todos, sí.
                 Log.failure(Log.summarize, "map.chunk", error)
                 failures += 1

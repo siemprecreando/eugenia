@@ -53,6 +53,7 @@ struct SettingsView: View {
                     NavigationLink("Gestión de espacio") { StorageView() }
                     NavigationLink("Copia cifrada") { BackupView() }
                     Toggle("Bloquear con Face ID", isOn: $settings.faceIDLock)
+                    Toggle("Ocultar títulos en la pantalla bloqueada", isOn: $settings.hideTitlesOnLockScreen)
                 }
                 Section {
                     Toggle("Avisarme antes de reuniones del calendario", isOn: Binding(
@@ -170,14 +171,18 @@ struct BackupView: View {
     var body: some View {
         Form {
             Section {
-                SecureField("Contraseña (mín. 8 caracteres)", text: $password)
+                SecureField("Contraseña (mín. 12 caracteres)", text: $password)
                 Toggle("Incluir el audio", isOn: $includeAudio)
                 Button("Crear copia cifrada") {
                     run {
-                        exportURL = try Backup.export(password: password, includeAudio: includeAudio)
+                        let r = try await Backup.export(password: password, includeAudio: includeAudio)
+                        exportURL = r.url
+                        if r.skippedAudio > 0 {
+                            message = String(localized: "Atención: \(r.skippedAudio) ficheros de audio no se pudieron leer y no van en la copia.")
+                        }
                     }
                 }
-                .disabled(password.count < 8 || busy)
+                .disabled(password.count < EncryptedArchive.minPasswordLength || busy)
             } header: { Text("Exportar") } footer: {
                 Text("AES-256 con tu contraseña. Tú eliges dónde guardarla (Archivos, un disco, AirDrop). Sin la contraseña no se puede abrir: Eugenia no la guarda.")
             }
@@ -187,7 +192,7 @@ struct BackupView: View {
                     SecureField("Contraseña de la copia", text: $importPassword)
                     Button("Restaurar") {
                         run {
-                            let n = try Backup.restore(from: importURL!, password: importPassword)
+                            let n = try await Backup.restore(from: importURL!, password: importPassword)
                             message = String(localized: "Restauradas \(n) reuniones.")
                             importURL = nil
                         }
@@ -207,13 +212,12 @@ struct BackupView: View {
         }
     }
 
-    private func run(_ work: @escaping () throws -> Void) {
+    private func run(_ work: @escaping @MainActor () async throws -> Void) {
         busy = true
         message = nil
-        // En la siguiente vuelta del bucle: deja pintar el indicador antes del PBKDF2.
-        DispatchQueue.main.async {
+        Task {
             defer { busy = false }
-            do { try work() } catch {
+            do { try await work() } catch {
                 message = (error as? CustomStringConvertible)?.description ?? Recorder.userMessage(for: error)
             }
         }

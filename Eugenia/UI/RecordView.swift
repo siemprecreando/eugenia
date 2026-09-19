@@ -45,16 +45,23 @@ struct RecordView: View {
         .task {
             // Abrir esta pantalla = grabar. Si la anterior terminó (bien o con error), se
             // empieza una nueva; si hay una en curso, solo se vuelve a ella.
-            recorder.resetIfFinished()
-            guard recorder.state == .idle else { return }
-            startRecording()
+            startFromRequest()
         }
+        .onChange(of: router.recordRequest) { _, _ in startFromRequest() }
     }
 
-    private func startRecording() {
-        var title = initialTitle
+    /// Petición externa (abrir la pantalla, Siri, aviso): si no hay una grabación en
+    /// curso, se empieza una nueva con el título que traiga la petición.
+    private func startFromRequest() {
+        recorder.resetIfFinished()
+        guard recorder.state == .idle else { return }
+        startRecording(title: router.pendingTitle ?? initialTitle, event: router.pendingEventID ?? eventID)
+    }
+
+    private func startRecording(title requestedTitle: String?, event requestedEvent: String?) {
+        var title = requestedTitle
         var attendees: [String] = []
-        var event = eventID
+        var event = requestedEvent
         // Reunión del calendario en curso: título y asistentes rellenados solos.
         if let m = CalendarService.shared.currentMeeting() {
             if title == nil { title = m.title }
@@ -138,10 +145,14 @@ struct RecordView: View {
                         Text("Ver la reunión").frame(maxWidth: .infinity).padding(.vertical, 12)
                     }
                     .buttonStyle(.borderedProminent)
-                    Button("Grabar otra") { startRecording() }.buttonStyle(.bordered)
+                    Button("Grabar otra") {
+                        // Reunión NUEVA: ni el título ni el evento de la anterior.
+                        recorder.resetIfFinished()
+                        startRecording(title: nil, event: nil)
+                    }.buttonStyle(.bordered)
                 }
                 if case .failed = recorder.state {
-                    Button("Reintentar") { recorder.resetIfFinished(); startRecording() }
+                    Button("Reintentar") { recorder.resetIfFinished(); startRecording(title: initialTitle, event: eventID) }
                         .buttonStyle(.borderedProminent)
                 }
                 Button {

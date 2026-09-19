@@ -183,6 +183,10 @@ final class Recorder: ObservableObject {
             guard await MicrophoneAudioSource.requestPermission() else { throw RecorderError.micPermissionDenied }
 
             let mic = MicrophoneAudioSource(profile: MicProfile(rawValue: settings.micProfile) ?? .room)
+            // Asignado YA: `prepare()` activa la sesión de audio, y si algo falla después
+            // `teardown()` tiene que poder soltarla (antes se quedaba activa y las otras
+            // apps no recuperaban el sonido).
+            source = mic
             // prepare() ANTES de leer el formato: ver el comentario en AudioSource.
             try mic.prepare()
             let sourceFormat = mic.format
@@ -257,7 +261,6 @@ final class Recorder: ObservableObject {
                 backlog.increment()
                 continuation.yield(buffer)
             }, onFinish: {})
-            source = mic
 
             if Task.isCancelled { throw CancellationError() }
 
@@ -279,6 +282,8 @@ final class Recorder: ObservableObject {
                 Log.failure(Log.capture, "record.start", error)
             }
             await teardown()
+            // Antes de borrar: `Store.delete` se niega a borrar la nota en grabación.
+            currentNoteID = nil
             if Store.shared.note(id) != nil {
                 // Si no llegó a grabar nada, la nota sobra.
                 if let n = Store.shared.note(id), n.allAudioFiles.allSatisfy({ !AudioParts.isReadable(Store.shared.audioURL($0)) }) {
@@ -354,10 +359,12 @@ final class Recorder: ObservableObject {
     }
 
     private func failDuringRecording(message: String) {
-        guard state.isActive else { return }
+        guard state.isActive, let id = currentNoteID else { return }
         Task {
             await stop()
-            state = .failed(message)
+            // Solo si ESTA grabación es la que acabó: si el usuario ya había parado y
+            // empezado otra, el fallo tardío no puede marcar la nueva como fallida.
+            if state == .idle, lastFinishedNoteID == id { state = .failed(message) }
         }
     }
 
@@ -369,18 +376,28 @@ final class Recorder: ObservableObject {
         let id = currentNoteID
         await teardown()
 
-        guard let id, var note = Store.shared.note(id) else { state = .idle; return }
-        if let w = writer { note.duration = await w.seconds }
+        // Todo lo que no depende de la nota se hace SIEMPRE, exista o no (antes, sin
+        // nota se saltaba la Live Activity, la cola quedaba suspendida y el escritor
+        // seguía vivo).
+        let secs = await writer?.seconds ?? elapsed
         writer = nil
+        currentNoteID = nil
+        LiveActivityController.shared.end()
+        // La nota se lee DESPUÉS de la última espera: un trozo de audio añadido
+        // entretanto no se pierde al guardar.
+        guard let id, var note = Store.shared.note(id) else {
+            ProcessingQueue.shared.resume()
+            state = .idle
+            return
+        }
+        note.duration = secs
         note.segments = finals
         note.transcript = finals.filter { !$0.isMarker }.map(\.text).joined(separator: " ")
         note.state = NoteState.queued
         Store.shared.save(note)
         Log.event(Log.capture, "record.stop", "note=\(id.uuidString) secs=\(Int(note.duration)) segs=\(finals.count)")
 
-        currentNoteID = nil
         lastFinishedNoteID = id
-        LiveActivityController.shared.end()
         ProcessingQueue.shared.recordingFinished(noteID: id)
         state = .idle
     }

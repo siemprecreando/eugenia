@@ -157,7 +157,6 @@
 "Borrar audio" = "Delete audio";
 "¿Borrar el audio de esta reunión?" = "Delete this meeting's audio?";
 "Borrar audio (se conserva el texto)" = "Delete audio (text is kept)";
-"Contraseña (mín. 8 caracteres)" = "Password (min. 8 characters)";
 "Incluir el audio" = "Include audio";
 "Crear copia cifrada" = "Create encrypted backup";
 "Restaurar" = "Restore";
@@ -198,3 +197,20 @@
 "Detener" = "Stop";
 "En pausa: llamada o aviso" = "Paused: call or alert";
 "Abre Eugenia y empieza a grabar." = "Opens Eugenia and starts recording.";
+
+/* v0.2 — revisión de seguridad y depuración */
+"Contraseña (mín. 12 caracteres)" = "Password (min. 12 characters)";
+"Atención: %lld ficheros de audio no se pudieron leer y no van en la copia." = "Warning: %lld audio files could not be read and are not in the backup.";
+"El fichero no es una copia de Eugenia o está dañado." = "This file is not a Eugenia backup, or it is damaged.";
+"La contraseña no es correcta." = "The password is not correct.";
+"Usa una contraseña de al menos 12 caracteres." = "Use a password with at least 12 characters.";
+"La copia está incompleta: le faltan datos al final." = "The backup is incomplete: data is missing at the end.";
+"No se pudo generar la clave. Inténtalo de nuevo." = "The key could not be generated. Please try again.";
+"Faltan los modelos de separación de hablantes en la app." = "The speaker separation models are missing from the app.";
+"Ocultar títulos en la pantalla bloqueada" = "Hide titles on the Lock Screen";
+"Una reunión está lista." = "A meeting is ready.";
+"Empieza una reunión del calendario." = "A calendar meeting is starting.";
+"Reunión" = "Meeting";
+"No se encontró la reunión." = "The meeting was not found.";
+"Eugenia está bloqueada con Face ID." = "Eugenia is locked with Face ID.";
+"Activa \"Permitir enviar reuniones fuera del iPhone\" en los ajustes de Eugenia." = "Turn on \"Allow sending meetings off the iPhone\" in Eugenia's settings.";

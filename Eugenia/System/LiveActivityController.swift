@@ -17,9 +17,11 @@ final class LiveActivityController {
     func start(noteID: UUID, title: String) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         end()
+        endOrphans()
         let state = RecordingAttributes.ContentState(timerStart: Date(), level: 0, interrupted: false)
+        let shown = AppSettings.shared.hideTitlesOnLockScreen ? String(localized: "Reunión") : title
         do {
-            activity = try Activity.request(attributes: RecordingAttributes(title: title),
+            activity = try Activity.request(attributes: RecordingAttributes(title: shown),
                                             content: .init(state: state, staleDate: nil))
         } catch {
             // Sin Live Activity se graba igual: es un extra, no un requisito.
@@ -36,6 +38,14 @@ final class LiveActivityController {
         let state = RecordingAttributes.ContentState(timerStart: Date().addingTimeInterval(-elapsed),
                                                      level: Double(level), interrupted: interrupted)
         Task { await activity.update(.init(state: state, staleDate: nil)) }
+    }
+
+    /// Live Activities de un proceso anterior (la app murió grabando): el sistema las
+    /// deja con el temporizador corriendo y un botón de parar que no para nada.
+    func endOrphans() {
+        for a in Activity<RecordingAttributes>.activities where a.id != activity?.id {
+            Task { await a.end(nil, dismissalPolicy: .immediate) }
+        }
     }
 
     func end() {

@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import Eugenia
 
@@ -171,6 +172,75 @@ final class SecurityTests: XCTestCase {
         XCTAssertEqual(got["audio/parte.m4a"], Data([1, 2, 3, 4]))
         XCTAssertThrowsError(try EncryptedArchive.read(from: out, password: "otra-contraseña") { _, _ in })
         XCTAssertThrowsError(try EncryptedArchive.write(to: out, password: "corta", index: Data(), files: []))
+    }
+
+    /// v2: cortar el final, quitar un registro o tocar un byte tiene que FALLAR, no
+    /// restaurar a medias en silencio (revisión de seguridad 2026-09-18).
+    func testArchiveDetectsTruncationAndTampering() throws {
+        let dir = FileManager.default.temporaryDirectory
+        let a = dir.appendingPathComponent("a-\(UUID().uuidString).m4a")
+        let b = dir.appendingPathComponent("b-\(UUID().uuidString).m4a")
+        try Data(repeating: 7, count: 100).write(to: a)
+        try Data(repeating: 9, count: 100).write(to: b)
+        let out = dir.appendingPathComponent("t-\(UUID().uuidString).eugenia")
+        let pw = "contraseña-larga"
+        try EncryptedArchive.write(to: out, password: pw, index: Data("[]".utf8), files: [("a.m4a", a), ("b.m4a", b)])
+        let full = try Data(contentsOf: out)
+        XCTAssertEqual(full.prefix(5), Data("EUGX2".utf8))
+
+        func reads(_ d: Data) -> Bool {
+            let f = dir.appendingPathComponent("m-\(UUID().uuidString).eugenia")
+            try? d.write(to: f)
+            return (try? EncryptedArchive.read(from: f, password: pw) { _, _ in }) != nil
+        }
+        XCTAssertTrue(reads(full))
+        // Registro final entero fuera: 2 + 4 ("#end") + 8 + 12 + 4 + 16 = 46 bytes.
+        XCTAssertFalse(reads(full.dropLast(46)), "sin el registro final no puede darse por buena")
+        XCTAssertFalse(reads(full.dropLast(5)), "cortada a mitad de registro")
+        var flipped = full
+        flipped[flipped.count / 2] ^= 0xFF
+        XCTAssertFalse(reads(flipped), "un byte cambiado")
+        XCTAssertFalse(reads(full + Data([0, 1, 2])), "basura detrás del final")
+    }
+
+    /// Las copias v1 (EUGX1, 210.000 iteraciones) se siguen pudiendo restaurar.
+    func testArchiveV1StillReadable() throws {
+        let pw = "contraseña-larga"
+        let salt = Data((0..<16).map { UInt8($0) })
+        let key = EncryptedArchive.deriveKey(password: pw, salt: salt, iterations: EncryptedArchive.iterationsV1)
+        func record(_ name: String, _ data: Data) throws -> Data {
+            let n = Data(name.utf8)
+            let sealed = try AES.GCM.seal(data, using: key, authenticating: n).combined!
+            return withUnsafeBytes(of: UInt16(n.count).bigEndian) { Data($0) } + n
+                + withUnsafeBytes(of: UInt64(sealed.count).bigEndian) { Data($0) } + sealed
+        }
+        let v1 = Data("EUGX1".utf8) + salt + (try record("notes.json", Data("[]".utf8)))
+            + (try record("audio/x.m4a", Data([5, 5])))
+        let f = FileManager.default.temporaryDirectory.appendingPathComponent("v1-\(UUID().uuidString).eugenia")
+        try v1.write(to: f)
+        var got: [String: Data] = [:]
+        XCTAssertEqual(try EncryptedArchive.read(from: f, password: pw) { got[$0] = $1 }, Data("[]".utf8))
+        XCTAssertEqual(got["audio/x.m4a"], Data([5, 5]))
+    }
+
+    /// "ñ" escrita como un carácter o como n + tilde combinada: la misma contraseña.
+    func testPasswordIsUnicodeNormalized() throws {
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("n-\(UUID().uuidString).eugenia")
+        try EncryptedArchive.write(to: out, password: "contrase\u{00F1}a-larga", index: Data("[]".utf8), files: [])
+        XCTAssertNoThrow(try EncryptedArchive.read(from: out, password: "contrasen\u{0303}a-larga") { _, _ in })
+        XCTAssertThrowsError(try EncryptedArchive.write(to: out, password: "once-letras", index: Data(), files: []),
+                             "11 caracteres no bastan")
+    }
+
+    /// Una copia ajena no puede colar en una nota el audio de OTRA nota.
+    func testRestoredAudioMustBelongToItsNote() {
+        let id = UUID()
+        XCTAssertTrue(Backup.isOwnAudio("\(id.uuidString)-000.m4a", of: id))
+        XCTAssertTrue(Backup.isOwnAudio("\(id.uuidString)-012.m4a", of: id))
+        XCTAssertTrue(Backup.isOwnAudio("\(id.uuidString).m4a", of: id))
+        XCTAssertFalse(Backup.isOwnAudio("\(UUID().uuidString)-000.m4a", of: id))
+        XCTAssertFalse(Backup.isOwnAudio("../\(id.uuidString)-000.m4a", of: id))
+        XCTAssertFalse(Backup.isOwnAudio("\(id.uuidString)-000.m4a.sh", of: id))
     }
 
     func testLanguageSetting() {

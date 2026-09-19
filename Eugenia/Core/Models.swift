@@ -150,6 +150,12 @@ struct Note: Codable, Identifiable, Equatable {
     var source: String = "audio"
     var attendees: [String] = []
     var calendarEventID: String?
+    /// Re-transcripción pedida en otro idioma. La transcripción y el resumen actuales
+    /// NO se borran hasta que la nueva sale bien (revisión 2026-09-18).
+    var pendingLanguage: String?
+    /// Motivo de fallo máquina-legible: "modelUnavailable" se reintenta solo al activar
+    /// Apple Intelligence; el resto, solo a mano.
+    var failureCode: String?
 
     struct Translation: Codable, Equatable {
         var transcript: String
@@ -197,6 +203,8 @@ struct Note: Codable, Identifiable, Equatable {
         source = try c.decodeIfPresent(String.self, forKey: .source) ?? "audio"
         attendees = try c.decodeIfPresent([String].self, forKey: .attendees) ?? []
         calendarEventID = try c.decodeIfPresent(String.self, forKey: .calendarEventID)
+        pendingLanguage = try c.decodeIfPresent(String.self, forKey: .pendingLanguage)
+        failureCode = try c.decodeIfPresent(String.self, forKey: .failureCode)
     }
 
     /// Todos los ficheros de audio de la nota, en orden, incluido el formato v0.1.

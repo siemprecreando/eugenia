@@ -5,5 +5,11 @@
 # --privileged y ve los registros de emparejamiento del iPhone. Una versión nueva de
 # la imagen o del paquete no entra sin revisarla. Para actualizar: cambiar las dos
 # líneas y comprobar el paquete en https://osv.dev.
+#
+# TODAS las dependencias, no solo pymobiledevice3, van con versión y SHA-256
+# (requirements.txt, generado con pip-compile --generate-hashes desde requirements.in).
+# Antes flotaban: una versión maliciosa de cualquiera de ellas habría visto las
+# claves de emparejamiento del iPhone. Para regenerar, ver el README.
 FROM docker.io/library/python:3.12@sha256:dabc147823ae8fd8cf9799a80f9e4ddb67eb2238fb9ca5f2ffc774c13a1d59d0
-RUN pip install --no-cache-dir pymobiledevice3==11.15.5
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --require-hashes --no-deps -r /tmp/requirements.txt

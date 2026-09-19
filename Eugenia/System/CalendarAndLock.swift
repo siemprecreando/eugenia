@@ -2,6 +2,7 @@ import EventKit
 import Foundation
 import LocalAuthentication
 import SwiftUI
+import UIKit
 import UserNotifications
 
 /// Calendario (plan, Fase 4): detectar la reunión en curso para rellenar título y
@@ -74,8 +75,20 @@ final class AppLock: ObservableObject {
     static let shared = AppLock()
     @Published private(set) var locked = false
 
+    /// Face ID se pide solo UNA vez por vuelta a primer plano. La hoja de Face ID pone
+    /// la app en inactiva; al cancelarla vuelve a activa y, sin esto, se volvía a
+    /// pedir en bucle. El botón "Desbloquear" llama a `unlock()` directamente.
+    private var autoPrompted = false
+
     func lockIfNeeded() {
         if AppSettings.shared.faceIDLock { locked = true }
+        autoPrompted = false
+    }
+
+    func autoUnlock() async {
+        guard locked, !autoPrompted else { return }
+        autoPrompted = true
+        await unlock()
     }
 
     func unlock() async {
@@ -95,5 +108,51 @@ final class AppLock: ObservableObject {
         } catch {
             Log.failure(Log.system, "applock", error)
         }
+    }
+}
+
+/// La tapa del bloqueo vive en su PROPIA ventana, por encima de todo (revisión de
+/// seguridad 2026-09-18). Dentro del árbol de vistas no tapaba las hojas —preguntar a
+/// la IA, compartir, grabar—, que SwiftUI presenta por encima: su contenido se veía
+/// en la captura del selector de apps y se podía usar antes de Face ID.
+@MainActor
+final class LockOverlay {
+    static let shared = LockOverlay()
+    private var window: UIWindow?
+
+    func update(visible: Bool) {
+        if visible {
+            guard window == nil,
+                  let scene = UIApplication.shared.connectedScenes
+                    .compactMap({ $0 as? UIWindowScene })
+                    .first(where: { $0.activationState != .unattached })
+            else { return }
+            let w = UIWindow(windowScene: scene)
+            w.windowLevel = .alert + 1
+            w.rootViewController = UIHostingController(rootView: LockScreen())
+            w.isHidden = false
+            window = w
+            // Lo de debajo no existe para VoiceOver mientras está tapado.
+            for other in scene.windows where other !== w { other.accessibilityElementsHidden = true }
+        } else if let w = window {
+            for other in w.windowScene?.windows ?? [] where other !== w { other.accessibilityElementsHidden = false }
+            w.isHidden = true
+            window = nil
+        }
+    }
+}
+
+struct LockScreen: View {
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.background).ignoresSafeArea()
+            VStack(spacing: 16) {
+                Image(systemName: "lock.fill").font(.largeTitle)
+                Text("Eugenia está bloqueada")
+                Button("Desbloquear") { Task { await AppLock.shared.unlock() } }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .accessibilityIdentifier("lock-screen")
     }
 }

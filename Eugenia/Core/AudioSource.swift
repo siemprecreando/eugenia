@@ -64,6 +64,12 @@ enum MicEvent: Sendable {
 final class MicrophoneAudioSource: AudioSource {
     private var engine = AVAudioEngine()
     private var running = false
+    /// La sesión se activó en `prepare()`: hay que soltarla aunque no llegara a grabar.
+    private var sessionActive = false
+    /// Hay una interrupción (llamada) en curso: los cambios de configuración que
+    /// llegan mientras tanto NO reinician el motor — fallaría a mitad de llamada y la
+    /// grabación se daba por perdida en vez de reanudarse al colgar.
+    private var interrupted = false
     private var onBuffer: ((AVAudioPCMBuffer) -> Void)?
     private var observers: [NSObjectProtocol] = []
     private let profile: MicProfile
@@ -72,7 +78,10 @@ final class MicrophoneAudioSource: AudioSource {
 
     init(profile: MicProfile = .room) { self.profile = profile }
 
-    deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+    deinit {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        if let o = engineObserver { NotificationCenter.default.removeObserver(o) }
+    }
 
     /// OJO: solo es válido DESPUÉS de `prepare()`. Antes de activar la sesión de
     /// audio, `outputFormat(forBus:)` devuelve un formato con 0 Hz — y un fichero
@@ -100,6 +109,7 @@ final class MicrophoneAudioSource: AudioSource {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.record, mode: profile.mode, options: [.allowBluetoothHFP])
         try session.setActive(true)
+        sessionActive = true
 
         let fmt = engine.inputNode.outputFormat(forBus: 0)
         guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
@@ -159,37 +169,58 @@ final class MicrophoneAudioSource: AudioSource {
             switch type {
             case .began:
                 Log.event(Log.capture, "mic.interrupted")
+                self.interrupted = true
                 self.onEvent?(.interrupted)
             case .ended:
+                self.interrupted = false
                 // Se reanuda SIEMPRE, aunque el sistema no ponga `.shouldResume`: esto es
                 // una grabadora, y el usuario espera que siga grabando al colgar.
                 self.restart(reason: "interruption")
             @unknown default: break
             }
         })
-        observers.append(nc.addObserver(forName: .AVAudioEngineConfigurationChange,
-                                        object: engine, queue: .main) { [weak self] _ in
-            self?.restart(reason: "config")
-        })
+        observeEngine()
         observers.append(nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification,
                                         object: session, queue: .main) { [weak self] _ in
             guard let self else { return }
             // Tras un reinicio de los servicios de medios el motor viejo es inservible.
+            // El observador de configuración iba atado al motor VIEJO: hay que
+            // volver a registrarlo en el nuevo o los cambios de ruta se ignoran.
+            if let o = self.engineObserver { NotificationCenter.default.removeObserver(o) }
             self.engine = AVAudioEngine()
+            self.observeEngine()
+            self.interrupted = false
             try? self.prepare()
             self.restart(reason: "mediaReset")
         })
     }
 
+    private var engineObserver: NSObjectProtocol?
+
+    private func observeEngine() {
+        engineObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            guard let self, !self.interrupted else { return }
+            self.restart(reason: "config")
+        }
+    }
+
     func stop() {
-        guard running else { return }
-        running = false
-        observers.forEach(NotificationCenter.default.removeObserver)
-        observers = []
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        Log.event(Log.capture, "mic.stop")
+        if running {
+            running = false
+            observers.forEach(NotificationCenter.default.removeObserver)
+            observers = []
+            if let o = engineObserver { NotificationCenter.default.removeObserver(o); engineObserver = nil }
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            Log.event(Log.capture, "mic.stop")
+        }
+        // Siempre: también tras un arranque fallido después de `prepare()`.
+        if sessionActive {
+            sessionActive = false
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 }
 
@@ -227,10 +258,11 @@ final class FileAudioSource: AudioSource {
         let fmt = format
         let frames = chunkFrames
         let factor = realtimeFactor
-        Task.detached { [weak self] in
-            // Antes: `guard let self else { return }` sin llamar a onFinish, y quien
-            // esperaba el final del fichero se quedaba colgado para siempre.
-            guard let self else { onFinish(); return }
+        // Referencia FUERTE (revisión 2026-09-18): con `weak`, en un build optimizado
+        // el llamador podía soltar el origen justo tras `start()` y el fichero se daba
+        // por terminado sin leer nada — importación vacía sin error. La tarea acaba sola
+        // al final del fichero o con `stop()`.
+        Task.detached { [self] in
             while !self.cancelled {
                 guard let buffer = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames) else { break }
                 do {

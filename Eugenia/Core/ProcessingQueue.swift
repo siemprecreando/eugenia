@@ -36,6 +36,10 @@ final class ProcessingQueue: ObservableObject {
     /// Arranque de la app: recuperar grabaciones cortadas y reanudar lo pendiente.
     func bootstrap() {
         Store.shared.recoverInterruptedRecordings(except: Recorder.shared.currentNoteID)
+        // Live Activity que dejó un proceso anterior muerto a mitad de grabación.
+        if !Recorder.shared.state.isActive && Recorder.shared.state != .starting {
+            LiveActivityController.shared.endOrphans()
+        }
         // Lo que se quedó "processing" al morir la app vuelve a la cola.
         for n in Store.shared.notes where n.state == NoteState.processing {
             Store.shared.update(n.id) { $0.state = NoteState.queued }
@@ -103,7 +107,15 @@ final class ProcessingQueue: ObservableObject {
     }
 
     private func loop() async {
-        defer { worker = nil; activeNoteID = nil; phase = "" }
+        defer {
+            worker = nil; activeNoteID = nil; phase = ""
+            // Un trabajo cancelado que termina de deshacerse DESPUÉS de que la grabación
+            // acabara: su `kick()` llegó cuando este worker aún existía y se perdió.
+            if !suspended, !Recorder.shared.state.isActive, !pending.isEmpty,
+               UIApplication.shared.applicationState != .background {
+                Task { @MainActor in ProcessingQueue.shared.kick() }
+            }
+        }
         while !Task.isCancelled {
             let queue = pending
             guard !queue.isEmpty else { return }
@@ -144,22 +156,29 @@ final class ProcessingQueue: ObservableObject {
         bg = UIApplication.shared.beginBackgroundTask(withName: "eugenia.enrich") { [weak self] in
             self?.worker?.cancel()
             UIApplication.shared.endBackgroundTask(bg)
+            bg = .invalid                       // que el defer no lo cierre dos veces
         }
         defer { if bg != .invalid { UIApplication.shared.endBackgroundTask(bg) } }
 
         do {
             // 1) Audio importado sin transcribir
-            if initial.segments.isEmpty && initial.transcript.isEmpty && !initial.allAudioFiles.isEmpty {
+            if (initial.segments.isEmpty && initial.transcript.isEmpty || initial.pendingLanguage != nil)
+                && !initial.allAudioFiles.isEmpty {
                 phase = "Transcribiendo"
                 try await transcribeFromAudio(id)
             }
+            // El usuario pidió otra cosa entretanto (reintentar, otra plantilla, otro
+            // idioma) o la borró: este trabajo ya no vale; la cola lo retoma.
+            guard stillMine(id) else { return }
             // 2) Hablantes
             if AppSettings.shared.diarizationEnabled, let n = Store.shared.note(id),
                !n.allAudioFiles.isEmpty, n.audioState == "present", n.speakerLabels.isEmpty, !n.segments.isEmpty {
                 phase = "Separando hablantes"
+                try Task.checkCancellation()
                 await diarize(id)
             }
             try Task.checkCancellation()
+            guard stillMine(id) else { return }
             // 3) Resumen
             guard let n = Store.shared.note(id) else { return }
             let hasText = !n.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -168,8 +187,10 @@ final class ProcessingQueue: ObservableObject {
                 try await summarize(id)
             } else {
                 Store.shared.update(id) {
+                    guard $0.state == NoteState.processing else { return }
                     $0.state = NoteState.failed
                     $0.failure = SummarizerError.emptyTranscript.description
+                    $0.failureCode = "emptyTranscript"
                 }
             }
             // 4) Índice de búsqueda
@@ -186,14 +207,26 @@ final class ProcessingQueue: ObservableObject {
         } catch {
             Log.failure(Log.queue, "job", error)
             Store.shared.update(id) {
+                guard $0.state == NoteState.processing else { return }
                 $0.state = NoteState.failed
                 // Texto legible y SIN contenido: nunca el `String(describing:)` del error
                 // (los de FoundationModels pueden arrastrar el fragmento de transcripción).
                 $0.failure = Recorder.userMessage(for: error)
+                if let e = error as? SummarizerError, case .modelUnavailable = e {
+                    $0.failureCode = "modelUnavailable"
+                } else {
+                    $0.failureCode = "other"
+                }
+                // Una re-transcripción que falla deja la nota como estaba, sin repetirse.
+                $0.pendingLanguage = nil
             }
         }
         activeNoteID = nil
         phase = ""
+    }
+
+    private func stillMine(_ id: UUID) -> Bool {
+        Store.shared.note(id)?.state == NoteState.processing
     }
 
     /// Reintentar a mano una nota fallida (o forzar otra plantilla).
@@ -201,6 +234,7 @@ final class ProcessingQueue: ObservableObject {
         Store.shared.update(id) {
             $0.state = NoteState.queued
             $0.failure = nil
+            $0.failureCode = nil
             if resetSummary { $0.mapCheckpoints = [] }
         }
         prioritize(id)
@@ -218,6 +252,7 @@ final class ProcessingQueue: ObservableObject {
                 Store.shared.update(id) { $0.mapCheckpoints.append(cp) }
             })
         Store.shared.update(id) {
+            guard $0.state == NoteState.processing else { return }
             // Las tareas que el usuario ya marcó como hechas siguen hechas.
             let doneTexts = Set($0.actionItems.filter(\.done).map(\.text))
             $0.summaryOverview = result.overview
@@ -226,6 +261,7 @@ final class ProcessingQueue: ObservableObject {
             $0.actionItems = result.actionItems.map { var i = $0; i.done = doneTexts.contains(i.text); return i }
             $0.state = NoteState.summarized
             $0.failure = nil
+            $0.failureCode = nil
         }
     }
 
@@ -235,7 +271,8 @@ final class ProcessingQueue: ObservableObject {
     /// micrófono (FileAudioSource → Transcriber). Guarda segmentos con tiempos.
     private func transcribeFromAudio(_ id: UUID) async throws {
         guard let n = Store.shared.note(id) else { return }
-        let locale = Locale(identifier: n.language == "en" ? "en-US" : "es-ES")
+        let language = n.pendingLanguage ?? n.language
+        let locale = Locale(identifier: language == "en" ? "en-US" : "es-ES")
         try await Transcriber.prepareModel(for: locale)
         var all: [TranscriptSegment] = []
         var offset = 0.0
@@ -247,6 +284,19 @@ final class ProcessingQueue: ObservableObject {
             offset += AudioParts.duration(url)
         }
         Store.shared.update(id) {
+            guard $0.state == NoteState.processing else { return }
+            if $0.pendingLanguage != nil {
+                // Solo AHORA, con la transcripción nueva en la mano, se tira lo viejo.
+                $0.language = language
+                $0.pendingLanguage = nil
+                $0.speakerNames = [:]
+                $0.summaryOverview = ""
+                $0.keyPoints = []
+                $0.decisions = []
+                $0.actionItems = []
+                $0.translations = [:]
+                $0.followUpEmail = ""
+            }
             $0.segments = all
             $0.transcript = all.map(\.text).joined(separator: " ")
             if $0.duration == 0 { $0.duration = offset }
@@ -254,23 +304,29 @@ final class ProcessingQueue: ObservableObject {
         }
     }
 
+    /// ¿Están todos los ficheros de audio de la nota en disco? (Una nota restaurada
+    /// de una copia sin audio dice "present" pero no tiene nada que transcribir.)
+    func hasAllAudio(_ n: Note) -> Bool {
+        n.audioState == "present" && !n.allAudioFiles.isEmpty
+            && n.allAudioFiles.allSatisfy { FileManager.default.fileExists(atPath: Store.shared.audioURL($0).path) }
+    }
+
     /// Cambiar el idioma de una reunión ya grabada: se vuelve a transcribir desde el
     /// audio (plan 5.2: anulación manual del idioma).
-    func retranscribe(_ id: UUID, language: String) {
+    /// Antes borraba transcripción y resumen de entrada: si la nueva transcripción
+    /// fallaba (modelo del otro idioma sin red, audio que no está), la nota se quedaba
+    /// vacía para siempre. Ahora lo viejo se conserva hasta que lo nuevo sale bien.
+    @discardableResult
+    func retranscribe(_ id: UUID, language: String) -> Bool {
+        guard let n = Store.shared.note(id), hasAllAudio(n) else { return false }
         Store.shared.update(id) {
-            $0.language = language
-            $0.segments = []
-            $0.transcript = ""
-            $0.speakerNames = [:]
-            $0.mapCheckpoints = []
-            $0.summaryOverview = ""
-            $0.keyPoints = []
-            $0.decisions = []
-            $0.actionItems = []
-            $0.translations = [:]
-            $0.state = NoteState.imported
+            $0.pendingLanguage = language
+            $0.state = NoteState.queued
+            $0.failure = nil
+            $0.failureCode = nil
         }
         prioritize(id)
+        return true
     }
 
     private func diarize(_ id: UUID) async {
@@ -284,7 +340,11 @@ final class ProcessingQueue: ObservableObject {
             for (label, name) in VoiceprintStore.shared.match(embeddings: out.embeddings) where names[label] == nil {
                 names[label] = name
             }
+            // Borrada o re-pedida mientras se separaban hablantes: no se toca nada, y
+            // mucho menos se guardan huellas de voz de una reunión borrada.
+            guard stillMine(id) else { return }
             Store.shared.update(id) {
+                guard $0.state == NoteState.processing else { return }
                 $0.segments = labelled
                 $0.speakerNames = names
             }
@@ -324,6 +384,9 @@ final class ProcessingQueue: ObservableObject {
 /// Transcripción de un fichero con el pipeline de producción.
 enum FileTranscription {
     static func transcribe(url: URL, locale: Locale, caseId: String? = nil) async throws -> [TranscriptSegment] {
+        // El fichero se abre ANTES de arrancar el analizador: si no se puede leer, no
+        // queda un SpeechAnalyzer vivo para siempre.
+        let source = try FileAudioSource(url: url, realtimeFactor: 0)
         let transcriber = Transcriber()
         let segments = try await transcriber.start(locale: locale, caseId: caseId)
 
@@ -343,13 +406,25 @@ enum FileTranscription {
             for await buffer in buffers { await transcriber.feed(buffer) }
         }
 
-        let source = try FileAudioSource(url: url, realtimeFactor: 0)
         let done = AsyncStream<Void>.makeStream()
-        try source.start(onBuffer: { continuation.yield($0) }, onFinish: { done.continuation.finish() })
-        for await _ in done.stream {}
+        do {
+            try source.start(onBuffer: { continuation.yield($0) }, onFinish: { done.continuation.finish() })
+        } catch {
+            continuation.finish(); await pump.value; await transcriber.finish()
+            throw error
+        }
+        // Al empezar una grabación la cola cancela: se deja de leer el fichero en vez
+        // de transcribirlo entero a la vez que el micrófono (plan 5.7).
+        await withTaskCancellationHandler {
+            for await _ in done.stream {}
+        } onCancel: {
+            source.stop()
+        }
         continuation.finish()
         await pump.value
         await transcriber.finish()
-        return await collector.value
+        let result = await collector.value
+        try Task.checkCancellation()
+        return result
     }
 }
