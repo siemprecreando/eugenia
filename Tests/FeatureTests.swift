@@ -333,3 +333,64 @@ final class SearchTests: XCTestCase {
         XCTAssertEqual(hits.first?.atSeconds ?? -1, 42, accuracy: 0.01)
     }
 }
+
+final class SpeakerNamingTests: XCTestCase {
+    private func seg(_ speaker: String, _ text: String) -> TranscriptSegment {
+        TranscriptSegment(text: text, start: 0, end: 1, speaker: speaker)
+    }
+
+    func testSelfIntroductionsInSpanishAndEnglish() {
+        let found = SpeakerNaming.selfIntroductions([
+            seg("S1", "Hola a todos, soy Marta y llevo el proyecto."),
+            seg("S2", "Buenas, me llamo Juan Pablo, de ventas."),
+            seg("S3", "Hi everyone, I'm Kevin from the Monterrey office.")
+        ])
+        XCTAssertEqual(found, ["S1": "Marta", "S2": "Juan Pablo", "S3": "Kevin"])
+    }
+
+    func testNoFalsePositives() {
+        let found = SpeakerNaming.selfIntroductions([
+            seg("S1", "Yo soy consciente de que vamos tarde."),        // minúscula: no es nombre
+            seg("S2", "Soy de Monterrey y soy Responsable de compras."), // palabras vetadas
+            seg("S3", "I'm going to share my screen.")
+        ])
+        XCTAssertTrue(found.isEmpty, "\(found)")
+    }
+
+    func testConflictingIntroductionsAreDropped() {
+        // Dos hablantes dicen "soy Marta" (uno cita al otro): no se asigna a ninguno.
+        let found = SpeakerNaming.selfIntroductions([
+            seg("S1", "Soy Marta."), seg("S2", "Y dijo: soy Marta, la de compras."), seg("S3", "Soy Luis.")
+        ])
+        XCTAssertEqual(found, ["S3": "Luis"])
+    }
+
+    func testRenameReplacesWholeWordsOnly() {
+        XCTAssertEqual(Store.replaceWord("Hablante 2", with: "Marta", in: "Hablante 2 cierra el presupuesto; Hablante 21 no."),
+                       "Marta cierra el presupuesto; Hablante 21 no.")
+        XCTAssertEqual(Store.replaceWord("Ana", with: "Luisa", in: "Ana y Mariana"), "Luisa y Mariana")
+    }
+
+    @MainActor
+    func testRenameAndReassignInStore() throws {
+        var n = Note(title: "t", language: "es", state: NoteState.summarized)
+        n.segments = [seg("S1", "Hola"), seg("S2", "Adiós"), seg("S2", "Esto lo dijo otro")]
+        n.summaryOverview = "Hablante 2 se despide."
+        n.actionItems = [StoredActionItem(text: "Enviar informe", assignee: "Hablante 2", status: "confirmado", atSeconds: 1)]
+        Store.shared.save(n)
+        defer { Store.shared.delete(Store.shared.note(n.id)!) }
+
+        Store.shared.renameSpeaker(noteID: n.id, label: "S2", to: "Marta")
+        var got = try XCTUnwrap(Store.shared.note(n.id))
+        XCTAssertEqual(got.displayName(forSpeaker: "S2"), "Marta")
+        XCTAssertEqual(got.summaryOverview, "Marta se despide.")
+        XCTAssertEqual(got.actionItems.first?.assignee, "Marta")
+
+        let label = Store.shared.reassignSegment(noteID: n.id, segmentID: n.segments[2].id, to: nil, newName: "Luis")
+        got = try XCTUnwrap(Store.shared.note(n.id))
+        XCTAssertEqual(label, "S3")
+        XCTAssertEqual(got.segments[2].speaker, "S3")
+        XCTAssertEqual(got.displayName(forSpeaker: "S3"), "Luis")
+        XCTAssertEqual(got.segments[1].speaker, "S2", "las demás frases no cambian")
+    }
+}

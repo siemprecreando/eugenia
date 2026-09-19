@@ -28,6 +28,12 @@ struct NoteDetailView: View {
     }
 
     @State private var tab: Tab = .summary
+    /// Renombrar desde la transcripción: la etiqueta ("S2") y el texto que se escribe.
+    @State private var renamingLabel: String?
+    @State private var renameText = ""
+    /// Frase que pasa a una persona nueva.
+    @State private var newPersonForSegment: UUID?
+    @State private var newPersonName = ""
     @State private var editingTitle = false
     @State private var titleDraft = ""
     @State private var editingSummary = false
@@ -60,6 +66,28 @@ struct NoteDetailView: View {
         }
         .onDisappear { player.pause() }
         .sheet(isPresented: $showingSpeakers) { if let note { SpeakerNamesView(note: note) } }
+        .alert("Nombre del hablante", isPresented: Binding(get: { renamingLabel != nil },
+                                                           set: { if !$0 { renamingLabel = nil } })) {
+            TextField("Nombre", text: $renameText)
+            Button("Guardar") {
+                if let label = renamingLabel { renameSpeaker(label, renameText) }
+                renamingLabel = nil
+            }
+            Button("Cancelar", role: .cancel) { renamingLabel = nil }
+        } message: {
+            Text("Se cambia en toda la reunión, también en el resumen.")
+        }
+        .alert("¿Quién dijo esta frase?", isPresented: Binding(get: { newPersonForSegment != nil },
+                                                               set: { if !$0 { newPersonForSegment = nil } })) {
+            TextField("Nombre (opcional)", text: $newPersonName)
+            Button("Guardar") {
+                if let sid = newPersonForSegment {
+                    store.reassignSegment(noteID: noteID, segmentID: sid, to: nil, newName: newPersonName)
+                }
+                newPersonForSegment = nil
+            }
+            Button("Cancelar", role: .cancel) { newPersonForSegment = nil }
+        }
         .sheet(item: Binding(get: { shareURL.map(ShareItem.init) }, set: { shareURL = $0?.url })) { item in
             ShareSheet(items: [item.url])
         }
@@ -283,12 +311,50 @@ struct NoteDetailView: View {
                     ForEach(note.segments) { seg in
                         SegmentRow(segment: seg, name: note.displayName(forSpeaker: seg.speaker),
                                    color: SpeakerColor.color(for: seg.speaker),
-                                   active: player.currentTime >= seg.start && player.currentTime < max(seg.end, seg.start + 1))
+                                   active: player.currentTime >= seg.start && player.currentTime < max(seg.end, seg.start + 1),
+                                   onNameTap: { startRename(note, seg.speaker) })
                             .onTapGesture { if player.isReady && !seg.isMarker { player.seek(seg.start); player.play() } }
+                            .contextMenu { if !seg.isMarker { segmentMenu(note, seg) } }
                     }
                 }
             }
         }
+    }
+
+    private func startRename(_ note: Note, _ label: String?) {
+        guard let label else { return }
+        renameText = note.speakerNames[label] ?? ""
+        renamingLabel = label
+    }
+
+    /// Mismo efecto que la hoja de hablantes: nombre en toda la reunión y, con el
+    /// reconocimiento de voces activo, aprende esa voz.
+    private func renameSpeaker(_ label: String, _ name: String) {
+        store.renameSpeaker(noteID: noteID, label: label, to: name)
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !clean.isEmpty, let e = DiarizationCache.shared.embeddings(noteID: noteID)[label] {
+            VoiceprintStore.shared.enroll(name: clean, embedding: e)
+        }
+    }
+
+    @ViewBuilder
+    private func segmentMenu(_ note: Note, _ seg: TranscriptSegment) -> some View {
+        if let label = seg.speaker {
+            Button { startRename(note, label) } label: {
+                Label("Cambiar el nombre de \(note.displayName(forSpeaker: label) ?? label)", systemImage: "pencil")
+            }
+        }
+        Menu {
+            ForEach(note.speakerLabels.filter { $0 != seg.speaker }, id: \.self) { other in
+                Button(note.displayName(forSpeaker: other) ?? other) {
+                    store.reassignSegment(noteID: noteID, segmentID: seg.id, to: other)
+                }
+            }
+            Button("Otra persona…") { newPersonName = ""; newPersonForSegment = seg.id }
+        } label: {
+            Label("Esta frase la dijo…", systemImage: "person.crop.circle.badge.questionmark")
+        }
+        Button { UIPasteboard.general.string = seg.text } label: { Label("Copiar", systemImage: "doc.on.doc") }
     }
 
     // MARK: Tareas
@@ -436,20 +502,35 @@ private struct SegmentRow: View {
     let name: String?
     let color: Color
     let active: Bool
+    var onNameTap: () -> Void = {}
     var body: some View {
         if segment.isMarker {
             Label(segment.text, systemImage: "pause.circle").font(.caption).foregroundStyle(.orange)
         } else {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    if let name { Text(name).font(.caption.weight(.semibold)).foregroundStyle(color) }
+                    if let name {
+                        // Tocar el nombre = renombrar a ese hablante en toda la reunión.
+                        Button(action: onNameTap) {
+                            HStack(spacing: 2) {
+                                Text(name).font(.caption.weight(.semibold))
+                                Image(systemName: "pencil").font(.caption2)
+                            }
+                            .foregroundStyle(color)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel(Text("Cambiar el nombre de \(name)"))
+                        .accessibilityIdentifier("speaker-name")
+                    }
                     Text(TimeFormat.mmss(segment.start)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 Text(segment.text)
                     .padding(active ? 4 : 0)
                     .background(active ? Color.accentColor.opacity(0.15) : .clear, in: .rect(cornerRadius: 6))
             }
-            .accessibilityElement(children: .combine)
+            // `.contain`, no `.combine`: el nombre es un botón y tiene que poder tocarse
+            // también con VoiceOver (y desde las pruebas de interfaz).
+            .accessibilityElement(children: .contain)
         }
     }
 }
@@ -461,6 +542,8 @@ struct SpeakerNamesView: View {
     @EnvironmentObject private var store: Store
     @Environment(\.dismiss) private var dismiss
     @State private var names: [String: String] = [:]
+    @State private var detecting = false
+    @State private var detectResult: String?
 
     var body: some View {
         NavigationStack {
@@ -474,6 +557,27 @@ struct SpeakerNamesView: View {
                         }
                     }
                 } footer: {
+                    Text("Eugenia pone sola los nombres que se dicen en la reunión (\"soy Marta\"). También puedes tocar un nombre en la transcripción.")
+                }
+                Section {
+                    Button {
+                        detecting = true
+                        Task {
+                            var current = note
+                            for (k, v) in names where !v.isEmpty { current.speakerNames[k] = v }
+                            let found = await SpeakerNaming.suggest(for: current)
+                            for (k, v) in found { names[k] = v }
+                            detectResult = found.isEmpty
+                                ? String(localized: "No se dice ningún nombre con claridad.")
+                                : String(localized: "Encontrados: \(found.values.sorted().joined(separator: ", ")). Revisa y guarda.")
+                            detecting = false
+                        }
+                    } label: {
+                        if detecting { ProgressView() } else { Label("Buscar nombres en la conversación", systemImage: "text.magnifyingglass") }
+                    }
+                    .disabled(detecting)
+                    if let detectResult { Text(detectResult).font(.footnote).foregroundStyle(.secondary) }
+                } footer: {
                     Text(AppSettings.shared.voiceprintsEnabled
                          ? "Eugenia recordará estas voces para reconocerlas en próximas reuniones. Se guardan solo en este iPhone."
                          : "Puedes activar el reconocimiento de voces en Ajustes para que Eugenia las reconozca en próximas reuniones.")
@@ -485,7 +589,11 @@ struct SpeakerNamesView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Guardar") {
                         let clean = names.mapValues { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.value.isEmpty }
-                        store.update(note.id) { n in for (k, v) in clean { n.speakerNames[k] = v } }
+                        // Uno a uno por `renameSpeaker`: así el resumen y las tareas
+                        // dejan de decir "Hablante 2".
+                        for (k, v) in clean where note.speakerNames[k] != v {
+                            store.renameSpeaker(noteID: note.id, label: k, to: v)
+                        }
                         let emb = DiarizationCache.shared.embeddings(noteID: note.id)
                         for (label, name) in clean { if let e = emb[label] { VoiceprintStore.shared.enroll(name: name, embedding: e) } }
                         SearchIndex.shared.invalidate(note.id)

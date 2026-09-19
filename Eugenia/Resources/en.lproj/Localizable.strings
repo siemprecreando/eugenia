@@ -238,3 +238,15 @@
 "Borrar el audio" = "Delete audio";
 "Al terminar de procesar" = "When processing finishes";
 "Solo se borra el AUDIO. La transcripción (con quién habló en cada momento) y el resumen se quedan. \"Al terminar de procesar\" lo borra en cuanto se han separado los hablantes. Las favoritas no se tocan." = "Only the AUDIO is deleted. The transcript (with who spoke when) and the summary stay. \"When processing finishes\" deletes it as soon as the speakers have been separated. Favorites are never touched.";
+"Nombre del hablante" = "Speaker name";
+"Nombre" = "Name";
+"Se cambia en toda la reunión, también en el resumen." = "It changes across the whole meeting, including the summary.";
+"¿Quién dijo esta frase?" = "Who said this?";
+"Nombre (opcional)" = "Name (optional)";
+"Cambiar el nombre de %@" = "Rename %@";
+"Esta frase la dijo…" = "This was said by…";
+"Otra persona…" = "Someone else…";
+"Eugenia pone sola los nombres que se dicen en la reunión (\"soy Marta\"). También puedes tocar un nombre en la transcripción." = "Eugenia fills in names said in the meeting (\"I'm Marta\"). You can also tap a name in the transcript.";
+"Buscar nombres en la conversación" = "Find names in the conversation";
+"No se dice ningún nombre con claridad." = "No name is clearly said.";
+"Encontrados: %@. Revisa y guarda." = "Found: %@. Review and save.";

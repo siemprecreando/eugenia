@@ -179,6 +179,17 @@ final class ProcessingQueue: ObservableObject {
             }
             try Task.checkCancellation()
             guard stillMine(id) else { return }
+            // 2a) Nombres dichos en la reunión ("soy Marta"), antes del resumen para
+            // que el resumen ya los use. Solo rellena hablantes sin nombre.
+            if let n = Store.shared.note(id), !n.speakerLabels.isEmpty {
+                let found = await SpeakerNaming.suggest(for: n)
+                if !found.isEmpty, stillMine(id) {
+                    Store.shared.update(id) { note in
+                        for (l, name) in found where (note.speakerNames[l] ?? "").isEmpty { note.speakerNames[l] = name }
+                    }
+                    Log.event(Log.queue, "speaker.names", "found=\(found.count)")
+                }
+            }
             // 2b) Audio fuera, si el usuario no quiere guardarlo: a partir de aquí ya no
             // hace falta (el resumen trabaja sobre la transcripción).
             if AppSettings.shared.audioRetentionDays == RetentionPolicy.afterProcessing,

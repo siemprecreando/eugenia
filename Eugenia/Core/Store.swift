@@ -151,6 +151,59 @@ final class Store: ObservableObject {
         persist()
     }
 
+    // MARK: - Hablantes
+
+    /// Pone (o quita, con nombre vacío) el nombre de un hablante en TODA la reunión.
+    /// El resumen se escribió con el nombre anterior ("Hablante 2" o el viejo): se
+    /// sustituye también ahí, en tareas y en el correo, para que todo diga lo mismo.
+    func renameSpeaker(noteID: UUID, label: String, to newName: String) {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        update(noteID) { n in
+            let old = n.displayName(forSpeaker: label) ?? label
+            if name.isEmpty { n.speakerNames[label] = nil } else { n.speakerNames[label] = name }
+            let new = n.displayName(forSpeaker: label) ?? label
+            guard old != new else { return }
+            let swap: (String) -> String = { Self.replaceWord(old, with: new, in: $0) }
+            n.summaryOverview = swap(n.summaryOverview)
+            n.keyPoints = n.keyPoints.map { var p = $0; p.text = swap(p.text); return p }
+            n.decisions = n.decisions.map(swap)
+            n.actionItems = n.actionItems.map { var i = $0; i.text = swap(i.text); i.assignee = swap(i.assignee); return i }
+            n.followUpEmail = swap(n.followUpEmail)
+        }
+        SearchIndex.shared.invalidate(noteID)
+    }
+
+    /// Solo palabras enteras: renombrar "Ana" no toca "Mariana".
+    nonisolated static func replaceWord(_ old: String, with new: String, in text: String) -> String {
+        guard !old.isEmpty, text.localizedCaseInsensitiveContains(old) else { return text }
+        let pattern = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: old) + "(?![\\p{L}\\p{N}])"
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return text }
+        return re.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text),
+                                           withTemplate: NSRegularExpression.escapedTemplate(for: new))
+    }
+
+    /// Una frase mal atribuida: pasa a otro hablante existente, o a uno NUEVO si
+    /// `label` es nil (con `newName` como nombre). Devuelve la etiqueta final.
+    @discardableResult
+    func reassignSegment(noteID: UUID, segmentID: UUID, to label: String?, newName: String = "") -> String? {
+        var result: String?
+        update(noteID) { n in
+            guard let i = n.segments.firstIndex(where: { $0.id == segmentID }) else { return }
+            var target = label
+            if target == nil {
+                let used = n.speakerLabels.compactMap { Int($0.drop(while: { !$0.isNumber })) }
+                target = "S\((used.max() ?? 0) + 1)"
+                let clean = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !clean.isEmpty { n.speakerNames[target!] = clean }
+            }
+            n.segments[i].speaker = target
+            n.transcript = n.renderedTranscript(withSpeakers: false)
+            result = target
+        }
+        SearchIndex.shared.invalidate(noteID)
+        return result
+    }
+
     func deleteAudio(of note: Note) {
         for name in note.allAudioFiles {
             try? fm.removeItem(at: audioURL(name))

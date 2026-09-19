@@ -23,6 +23,11 @@ dispositivo**. Plan completo en [`../plan-summary-ai-iphone.md`](../plan-summary
 >   PDF, JSON) y copia cifrada, importar audio/vídeo/PDF/texto, Live Activity y botón
 >   en el Centro de Control, atajos de Siri, bloqueo con Face ID, sugerencias desde el
 >   calendario, interfaz en español e inglés.
+> - **Nombres de hablantes (v0.2.1):** se ponen solos si alguien se presenta ("soy
+>   Marta", "I'm Kevin") y, con Apple Intelligence, cuando a alguien le llaman por su
+>   nombre y contesta. Nunca pisan un nombre puesto a mano. En la transcripción: tocar
+>   el nombre lo cambia en toda la reunión (también en resumen y tareas); mantener
+>   pulsada una frase permite atribuirla a otro hablante o a una persona nueva.
 > - **Audio (v0.2.1):** por defecto NO se guarda. Se borra en cuanto se han
 >   transcrito y separado los hablantes; quedan la transcripción con quién habló en
 >   cada momento y el resumen. Ajustes › Gestión de espacio permite guardarlo
