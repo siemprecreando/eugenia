@@ -24,6 +24,9 @@ final class EugeniaUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = onboarding ? ["--show-onboarding"] : ["--skip-onboarding"]
         if demo { app.launchArguments.append("--ui-demo") }
+        // El simulador de CI arranca en inglés y la app ya trae traducción: las
+        // pruebas buscan textos en español, así que se fija el idioma.
+        app.launchArguments += ["-AppleLanguages", "(es)", "-AppleLocale", "es_MX"]
         app.launch()
         return app
     }
@@ -172,5 +175,20 @@ final class EugeniaUITests: XCTestCase {
         if understood.waitForExistence(timeout: 5) { understood.tap() }
         next.tap()
         XCTAssertTrue(app.buttons["record-button"].waitForExistence(timeout: 15), "El onboarding no terminó")
+    }
+
+    /// Teléfono en inglés: la interfaz sale traducida (y no a medias en español).
+    func test08Ingles() {
+        let app = XCUIApplication()
+        // Con datos de muestra: la prueba de grabación puede haber dejado una nota
+        // real en el simulador, así que no se cuenta con la lista vacía.
+        app.launchArguments = ["--skip-onboarding", "--ui-demo", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        let gear = app.buttons["settings-button"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 30))
+        gear.tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 10),
+                      "Los ajustes no salen en inglés")
+        shot(app, "14-ingles-ajustes")
     }
 }

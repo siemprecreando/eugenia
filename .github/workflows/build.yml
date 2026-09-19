@@ -166,7 +166,7 @@ jobs:
             echo "xcresulttool export attachments no funcionó; se pasa al plan B"
 
           python3 - <<'PYEOF'
-          import json, pathlib, shutil
+          import json, pathlib, re, shutil
           out = pathlib.Path("capturas")
           manifest = out / "manifest.json"
           renombradas = 0
@@ -176,6 +176,8 @@ jobs:
                   for att in entrada.get("attachments", []):
                       origen = out / att.get("exportedFileName", "")
                       nombre = att.get("suggestedHumanReadableName") or origen.name
+                      # upload-artifact rechaza " : < > | * ? y saltos de línea.
+                      nombre = re.sub(r'[\\":<>|*?\r\n/]', "_", nombre)
                       if origen.exists() and origen.name != nombre:
                           shutil.move(str(origen), str(out / nombre))
                           renombradas += 1
