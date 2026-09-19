@@ -77,7 +77,10 @@ struct ActionItemEntity: AppEntity, Identifiable {
     }
 
     init(_ i: StoredActionItem, note: Note) {
+        // Las propiedades normales ANTES que las @Property: asignar una @Property
+        // accede a `self`, y todo lo almacenado tiene que estar ya inicializado.
         id = i.id
+        noteID = note.id
         texto = i.text
         responsable = i.assignee
         vencimiento = i.dueText
@@ -85,7 +88,6 @@ struct ActionItemEntity: AppEntity, Identifiable {
         hecho = i.done
         notaOrigen = note.title
         instanteDecision = i.atSeconds
-        noteID = note.id
     }
 }
 

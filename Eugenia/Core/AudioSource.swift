@@ -98,7 +98,7 @@ final class MicrophoneAudioSource: AudioSource {
     /// que es justo el caso de uso de este producto (plan 5.1).
     func prepare() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: profile.mode, options: [.allowBluetooth])
+        try session.setCategory(.record, mode: profile.mode, options: [.allowBluetoothHFP])
         try session.setActive(true)
 
         let fmt = engine.inputNode.outputFormat(forBus: 0)

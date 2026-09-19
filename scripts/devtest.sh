@@ -63,7 +63,9 @@ echo "    ok: $BUNDLE instalada"
 
 # ------------------------------------------------------------------- 2. syslog
 say "2/7 · Capturando syslog en segundo plano"
-pymobiledevice3 syslog live > "$RUN_DIR/syslog.txt" 2>"$RUN_DIR/syslog.err" &
+# Solo el proceso de la app: el syslog completo trae la telemetría de TODO el
+# teléfono y no hace falta aquí (revisión de seguridad 2026-09-18).
+pymobiledevice3 syslog live -pn Eugenia > "$RUN_DIR/syslog.txt" 2>"$RUN_DIR/syslog.err" &
 SYSLOG_PID=$!
 sleep 2
 if ! kill -0 "$SYSLOG_PID" 2>/dev/null; then
@@ -169,7 +171,14 @@ for case in data.get("cases", []):
                         f"/Documents/diagnostics/{name}", target],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 PY
-pymobiledevice3 crash pull "$RUN_DIR/crashes" >/dev/null 2>&1 && echo "    crashes en $RUN_DIR/crashes" || echo "    sin crashes nuevos"
+# Solo los informes de Eugenia; los de otras apps son datos personales que sobran.
+if pymobiledevice3 crash pull "$RUN_DIR/crashes" >/dev/null 2>&1; then
+  find "$RUN_DIR/crashes" -type f ! -iname '*eugenia*' -delete 2>/dev/null
+  n=$(find "$RUN_DIR/crashes" -type f | wc -l)
+  [ "$n" -gt 0 ] && echo "    $n crash(es) de Eugenia en $RUN_DIR/crashes" || echo "    sin crashes de Eugenia"
+else
+  echo "    no se pudieron traer los crashes"
+fi
 
 # -------------------------------------------------------------------- 7. leer
 say "7/7 · Resultado"

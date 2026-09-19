@@ -25,6 +25,11 @@ fail() { printf '\033[31m    %s\033[0m\n' "$*"; }
 # solo se extrae.
 DIR="$HOME/Applications"
 APP="$DIR/iloader-rpm/usr/bin/iloader"
+# Versión y hash ANCLADOS (revisión de supply chain 2026-09-18). iloader maneja tu
+# contraseña de Apple ID: no se ejecuta nada que no coincida con este hash, que es el
+# que publica GitHub para el asset de la v2.3.3 (y el que verifica su firma minisign).
+ILOADER_VERSION="v2.3.3"
+ILOADER_SHA256="2dd4eba385bca8fc9eeba835a3448ba2c5497716319b277713e56cdb85e9fd35"
 
 say "1/3 · ¿Está el iPhone conectado?"
 UDID=$(idevice_id -l 2>/dev/null | head -1)
@@ -35,11 +40,21 @@ fi
 echo "    UDID: $UDID"
 
 say "2/3 · iloader"
+RPM="$DIR/iloader-linux-x86_64.rpm"
+if [ ! -f "$RPM" ] || ! echo "$ILOADER_SHA256  $RPM" | sha256sum -c --quiet 2>/dev/null; then
+  mkdir -p "$DIR"
+  gh release download "$ILOADER_VERSION" -R nab138/iloader -p 'iloader-linux-x86_64.rpm' -D "$DIR" --clobber \
+    || { fail "No se pudo descargar iloader."; exit 1; }
+  rm -rf "$DIR/iloader-rpm"
+fi
+if ! echo "$ILOADER_SHA256  $RPM" | sha256sum -c --quiet; then
+  fail "El hash de iloader NO coincide. No se ejecuta."
+  rm -f "$RPM"
+  exit 1
+fi
 if [ ! -x "$APP" ]; then
   mkdir -p "$DIR/iloader-rpm"
-  gh release download -R nab138/iloader -p 'iloader-linux-x86_64.rpm' -D "$DIR" --clobber \
-    || { fail "No se pudo descargar iloader."; exit 1; }
-  (cd "$DIR/iloader-rpm" && rpm2cpio ../iloader-linux-x86_64.rpm | cpio -idm --quiet)
+  (cd "$DIR/iloader-rpm" && rpm2cpio "$RPM" | cpio -idm --quiet)
 fi
 echo "    $APP"
 

@@ -1,4 +1,9 @@
 # pymobiledevice3 no compila con pip --user en Bazzite (faltan cabeceras de C para
-# lzfse/pylzss). Se usa desde este contenedor. Ver scripts/pmd3.
-FROM docker.io/library/python:3.12
-RUN pip install --no-cache-dir pymobiledevice3
+# lzfse/pylzss). Se usa desde este contenedor: scripts/devtest-container.sh.
+#
+# Versiones ANCLADAS (revisión de supply chain 2026-09-18): el contenedor corre con
+# --privileged y ve los registros de emparejamiento del iPhone. Una versión nueva de
+# la imagen o del paquete no entra sin revisarla. Para actualizar: cambiar las dos
+# líneas y comprobar el paquete en https://osv.dev.
+FROM docker.io/library/python:3.12@sha256:dabc147823ae8fd8cf9799a80f9e4ddb67eb2238fb9ca5f2ffc774c13a1d59d0
+RUN pip install --no-cache-dir pymobiledevice3==11.15.5
