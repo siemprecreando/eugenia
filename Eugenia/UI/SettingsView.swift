@@ -117,7 +117,8 @@ struct StorageView: View {
                 LabeledContent("Espacio libre en el iPhone", value: "\(store.freeDiskMB()) MB")
             }
             Section {
-                Picker("Borrar el audio pasados", selection: $settings.audioRetentionDays) {
+                Picker("Borrar el audio", selection: $settings.audioRetentionDays) {
+                    Text("Al terminar de procesar").tag(RetentionPolicy.afterProcessing)
                     Text("Nunca").tag(0)
                     Text("7 días").tag(7)
                     Text("30 días").tag(30)
@@ -126,7 +127,7 @@ struct StorageView: View {
                 }
                 Button("Aplicar ahora") { RetentionPolicy.sweep() }
             } header: { Text("Limpieza automática") } footer: {
-                Text("Solo se borra el AUDIO de reuniones ya resumidas. La transcripción y el resumen se quedan. Las favoritas no se tocan.")
+                Text("Solo se borra el AUDIO. La transcripción (con quién habló en cada momento) y el resumen se quedan. \"Al terminar de procesar\" lo borra en cuanto se han separado los hablantes. Las favoritas no se tocan.")
             }
             Section("Audio por reunión") {
                 ForEach(withAudio) { row in

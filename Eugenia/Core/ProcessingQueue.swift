@@ -179,6 +179,12 @@ final class ProcessingQueue: ObservableObject {
             }
             try Task.checkCancellation()
             guard stillMine(id) else { return }
+            // 2b) Audio fuera, si el usuario no quiere guardarlo: a partir de aquí ya no
+            // hace falta (el resumen trabaja sobre la transcripción).
+            if AppSettings.shared.audioRetentionDays == RetentionPolicy.afterProcessing,
+               let n = Store.shared.note(id), RetentionPolicy.audioNoLongerNeeded(n) {
+                RetentionPolicy.dropAudio(n)
+            }
             // 3) Resumen
             guard let n = Store.shared.note(id) else { return }
             let hasText = !n.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

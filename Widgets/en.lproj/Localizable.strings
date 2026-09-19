@@ -235,3 +235,6 @@
 "Empieza a grabar una reunión en Eugenia." = "Starts recording a meeting in Eugenia.";
 "Detiene la grabación en curso y la guarda." = "Stops the current recording and saves it.";
 "Asistentes: %@" = "Attendees: %@";
+"Borrar el audio" = "Delete audio";
+"Al terminar de procesar" = "When processing finishes";
+"Solo se borra el AUDIO. La transcripción (con quién habló en cada momento) y el resumen se quedan. \"Al terminar de procesar\" lo borra en cuanto se han separado los hablantes. Las favoritas no se tocan." = "Only the AUDIO is deleted. The transcript (with who spoke when) and the summary stay. \"When processing finishes\" deletes it as soon as the speakers have been separated. Favorites are never touched.";

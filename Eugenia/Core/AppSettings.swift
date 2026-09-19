@@ -14,7 +14,9 @@ final class AppSettings: ObservableObject {
     /// room | speakerCall | dictation
     @Published var micProfile: String { didSet { d.set(micProfile, forKey: "micProfile") } }
     @Published var keepScreenOn: Bool { didSet { d.set(keepScreenOn, forKey: "keepScreenOn") } }
-    /// Días tras los que se borra el AUDIO de una reunión ya resumida. 0 = nunca.
+    /// Días tras los que se borra el AUDIO de una reunión ya resumida. 0 = nunca;
+    /// -1 = en cuanto termina de procesarse (por defecto desde v0.2: Sergio no quiere
+    /// guardar audio, solo transcripción con hablantes y resumen).
     /// La transcripción y el resumen no se borran nunca solos (plan 8.2).
     @Published var audioRetentionDays: Int { didSet { d.set(audioRetentionDays, forKey: "audioRetentionDays") } }
     @Published var defaultTemplate: String { didSet { d.set(defaultTemplate, forKey: "defaultTemplate") } }
@@ -38,7 +40,7 @@ final class AppSettings: ObservableObject {
         recordingLanguage = d.string(forKey: "recordingLanguage") ?? "auto"
         micProfile = d.string(forKey: "micProfile") ?? MicProfile.room.rawValue
         keepScreenOn = d.object(forKey: "keepScreenOn") as? Bool ?? false
-        audioRetentionDays = d.object(forKey: "audioRetentionDays") as? Int ?? 0
+        audioRetentionDays = d.object(forKey: "audioRetentionDays") as? Int ?? RetentionPolicy.afterProcessing
         defaultTemplate = d.string(forKey: "defaultTemplate") ?? SummaryTemplate.executive.rawValue
         summaryTone = d.string(forKey: "summaryTone") ?? "neutral"
         faceIDLock = d.object(forKey: "faceIDLock") as? Bool ?? false

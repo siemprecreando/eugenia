@@ -150,13 +150,40 @@ enum ShortcutRunner {
 /// Borra el AUDIO (no la transcripción ni el resumen) de las reuniones ya resumidas
 /// que superan la antigüedad elegida. Las favoritas no se tocan. 0 = nunca.
 enum RetentionPolicy {
+    /// Valor de `audioRetentionDays`: el audio se borra en cuanto deja de hacer falta,
+    /// es decir, al terminar de transcribir y separar hablantes. Se quedan la
+    /// transcripción (con quién habló en cada momento) y el resumen.
+    static let afterProcessing = -1
+
+    /// ¿Se puede borrar ya el audio sin perder nada? Hace falta texto (si no, el audio
+    /// es lo único que hay y podría volver a transcribirse en otro idioma).
+    nonisolated static func audioNoLongerNeeded(_ n: Note) -> Bool {
+        n.audioState == "present" && !n.isFavorite && !n.allAudioFiles.isEmpty
+            && n.pendingLanguage == nil
+            && !n.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     nonisolated static func candidates(_ notes: [Note], days: Int, now: Date = Date()) -> [Note] {
+        if days == afterProcessing {
+            // Ya pasó por la cola (resumida, o fallida solo por el resumen).
+            return notes.filter {
+                ($0.state == NoteState.summarized || $0.state == NoteState.failed) && audioNoLongerNeeded($0)
+            }
+        }
         guard days > 0 else { return [] }
         let limit = now.addingTimeInterval(-Double(days) * 86_400)
         return notes.filter {
             $0.state == NoteState.summarized && $0.audioState == "present" && !$0.isFavorite
                 && !$0.allAudioFiles.isEmpty && $0.createdAt < limit
         }
+    }
+
+    /// Borra el audio de UNA nota y lo deja anotado.
+    @MainActor
+    static func dropAudio(_ n: Note) {
+        Store.shared.deleteAudio(of: n)
+        Store.shared.update(n.id) { $0.audioState = "deleted" }
+        Log.event(Log.storage, "retention.drop", "note=\(n.id.uuidString)")
     }
 
     @MainActor

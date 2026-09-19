@@ -264,6 +264,19 @@ final class RetentionAndExportTests: XCTestCase {
         XCTAssertEqual(RetentionPolicy.candidates(notes, days: 0).count, 0, "0 = nunca")
     }
 
+    /// "Al terminar de procesar": fuera el audio de lo ya procesado CON texto; nunca el
+    /// de una favorita, uno en cola o uno sin transcripción (sería lo único que queda).
+    func testRetentionAfterProcessing() {
+        func n(_ state: String, text: String = "hola", favorite: Bool = false) -> Note {
+            var x = note(daysAgo: 0, state: state, favorite: favorite)
+            x.transcript = text
+            return x
+        }
+        let notes = [n(NoteState.summarized), n(NoteState.failed), n(NoteState.queued),
+                     n(NoteState.summarized, favorite: true), n(NoteState.summarized, text: "  ")]
+        XCTAssertEqual(RetentionPolicy.candidates(notes, days: RetentionPolicy.afterProcessing).count, 2)
+    }
+
     /// El JSON es el contrato con los atajos de los usuarios: estas claves no cambian.
     func testJSONSchemaIsStable() throws {
         var n = Note(title: "Comité", language: "es", state: NoteState.summarized)

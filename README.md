@@ -22,7 +22,11 @@ dispositivo**. Plan completo en [`../plan-summary-ai-iphone.md`](../plan-summary
 >   preguntas a una reunión o a todas, búsqueda, carpetas, exportar (texto, Markdown,
 >   PDF, JSON) y copia cifrada, importar audio/vídeo/PDF/texto, Live Activity y botón
 >   en el Centro de Control, atajos de Siri, bloqueo con Face ID, sugerencias desde el
->   calendario, retención de audio configurable, interfaz en español e inglés.
+>   calendario, interfaz en español e inglés.
+> - **Audio (v0.2.1):** por defecto NO se guarda. Se borra en cuanto se han
+>   transcrito y separado los hablantes; quedan la transcripción con quién habló en
+>   cada momento y el resumen. Ajustes › Gestión de espacio permite guardarlo
+>   (nunca, 7/30/90 días, 1 año), y las favoritas lo conservan siempre.
 > - **Sin probar en el teléfono:** resumen (hace falta activar Apple Intelligence),
 >   separación de hablantes con audio real, y batería/temperatura en reuniones largas.
 >
