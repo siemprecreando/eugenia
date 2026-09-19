@@ -85,6 +85,21 @@ emparejamiento.
 https://github.com/siemprecreando/eugenia/releases/latest/download/Eugenia.ipa
 ```
 
+**Actualizar con el botón "Update" de SideStore.** Cada Release publica también una
+*fuente* de SideStore. Se añade una vez en SideStore › Sources › **+**:
+
+```
+https://github.com/siemprecreando/eugenia/releases/latest/download/source.json
+```
+
+A partir de ahí, una versión nueva aparece como **Update** en SideStore y se
+actualiza conservando las reuniones. La genera `scripts/make-source.py` a partir del
+propio `.ipa` (versión, tamaño, permisos), así que no puede decir algo distinto de lo
+que se instala.
+
+**Comprobar que un `.ipa` salió de este repositorio** (desde v0.2.0):
+`gh attestation verify Eugenia.ipa -R siemprecreando/eugenia`.
+
 Recuerda que la firma **caduca a los 7 días** y SideStore la refresca sola, siempre
 que tenga el VPN local (LocalDevVPN) configurado.
 

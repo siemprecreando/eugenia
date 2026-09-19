@@ -423,9 +423,19 @@ jobs:
       id-token: write        # atestación de procedencia
       attestations: write
     steps:
+      # Solo para leer scripts/make-source.py; primero, porque checkout limpia la carpeta.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: eugenia-${{ github.sha }}
+
+      # Fuente de SideStore: con ella, cada versión nueva sale como "Update" en
+      # SideStore. URL estable: releases/latest/download/source.json
+      - name: Fuente de SideStore
+        run: python3 scripts/make-source.py Eugenia.ipa "$GITHUB_REF_NAME" | tee source.json
 
       # Suma de comprobación junto al .ipa. El dSYM NO se publica (el repo es
       # público y daría símbolos completos a cualquiera): queda como artefacto.
@@ -446,3 +456,4 @@ jobs:
           files: |
             Eugenia.ipa
             SHA256SUMS
+            source.json
