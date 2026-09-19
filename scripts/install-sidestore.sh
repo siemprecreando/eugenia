@@ -50,6 +50,6 @@ cat <<'AVISO'
       · Elige el iPhone e instala SideStore.
       · Deja que coloque el fichero de emparejamiento en el teléfono.
     Luego, en el iPhone: confía en tu Apple ID (Ajustes → General → VPN y gestión
-    de dispositivos), instala StosVPN desde la App Store y abre SideStore.
+    de dispositivos), instala LocalDevVPN desde la App Store y abre SideStore.
 AVISO
 cd "$(dirname "$APP")" && exec "$APP"

@@ -88,7 +88,7 @@ https://github.com/siemprecreando/eugenia/releases/latest/download/Eugenia.ipa
 ```
 
 Recuerda que la firma **caduca a los 7 días** y SideStore la refresca sola, siempre
-que tenga el VPN local (StosVPN o WireGuard) configurado.
+que tenga el VPN local (LocalDevVPN) configurado.
 
 **4. Conectar el teléfono a esta máquina, una vez:**
 
@@ -124,6 +124,7 @@ project.yml                  proyecto XcodeGen (no hay .pbxproj que mantener a m
 scripts/
   check-entitlements.py      rechaza iCloud / App Groups / push antes de compilar
   install-sidestore.sh       pone SideStore en el teléfono vía iloader (solo la 1ª vez)
+  make-icon.py               dibuja el icono (Resources/Assets.xcassets/AppIcon)
   setup-device.sh            la conexión de una sola vez
   devtest.sh                 el bucle: lanzar, observar, recoger, diagnosticar
   afc.py                     acceso a Documents/ de la app por house_arrest

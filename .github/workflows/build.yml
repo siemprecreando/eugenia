@@ -327,6 +327,13 @@ jobs:
             ls -la "$APP"
             exit 1
           fi
+          # Sin CFBundleIcons + Assets.car la app sale en blanco en el iPhone y el
+          # build sigue verde. Se vio en v0.1.1.
+          if ! /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundlePrimaryIcon" "$APP/Info.plist" \
+               || [ ! -f "$APP/Assets.car" ]; then
+            echo "Falta el icono: no hay CFBundleIcons o Assets.car en el .app"
+            exit 1
+          fi
           # El commit viaja dentro de la app: el informe de diagnóstico lo incluye,
           # así que un fallo siempre se puede atribuir a una versión concreta.
           /usr/libexec/PlistBuddy -c "Add :EugeniaCommit string ${GITHUB_SHA}" "$APP/Info.plist" || \
