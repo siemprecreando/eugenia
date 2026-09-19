@@ -20,9 +20,10 @@ final class EugeniaUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func launch(demo: Bool) -> XCUIApplication {
+    private func launch(demo: Bool, onboarding: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
-        if demo { app.launchArguments = ["--ui-demo"] }
+        app.launchArguments = onboarding ? ["--show-onboarding"] : ["--skip-onboarding"]
+        if demo { app.launchArguments.append("--ui-demo") }
         app.launch()
         return app
     }
@@ -68,6 +69,9 @@ final class EugeniaUITests: XCTestCase {
             return XCTFail("La lista no se pobló con los datos de muestra")
         }
         fila.tap()
+        shot(app, "03a-detalle-resumen")
+        let tabTareas = app.buttons["Tareas"]
+        if tabTareas.waitForExistence(timeout: 10) { tabTareas.tap() }
 
         // Se comprueba el CONTENIDO, no los títulos de sección: los encabezados de
         // `List` cambian de forma entre versiones de iOS y no valen como ancla.
@@ -77,7 +81,8 @@ final class EugeniaUITests: XCTestCase {
                       "El detalle no muestra las tareas extraídas")
         shot(app, "03-detalle")
 
-        app.swipeUp()
+        let tabTexto = app.buttons["Transcripción"]
+        if tabTexto.waitForExistence(timeout: 5) { tabTexto.tap() }
         shot(app, "04-detalle-transcripcion")
     }
 
@@ -109,5 +114,63 @@ final class EugeniaUITests: XCTestCase {
         XCTAssertTrue(app.buttons["record-button"].waitForExistence(timeout: 15),
                       "No se volvió a la lista al cerrar la grabación")
         shot(app, "06-vuelta-a-la-lista")
+    }
+
+    /// Ajustes: que se abran y se vean todas las secciones.
+    func test04Ajustes() {
+        let app = launch(demo: true)
+        let gear = app.buttons["settings-button"]
+        XCTAssertTrue(gear.waitForExistence(timeout: 30))
+        gear.tap()
+        XCTAssertTrue(app.navigationBars["Ajustes"].waitForExistence(timeout: 10), "No se abrieron los ajustes")
+        shot(app, "07-ajustes")
+        app.swipeUp()
+        shot(app, "08-ajustes-abajo")
+        let espacio = app.buttons["Gestión de espacio"]
+        if espacio.waitForExistence(timeout: 5) {
+            espacio.tap()
+            shot(app, "09-gestion-espacio")
+        }
+    }
+
+    /// Búsqueda global sobre los datos de muestra: "presupuesto" está en la reunión larga.
+    func test05Busqueda() {
+        let app = launch(demo: true)
+        XCTAssertTrue(app.buttons["record-button"].waitForExistence(timeout: 30))
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "No hay campo de búsqueda")
+        field.tap()
+        field.typeText("presupuesto")
+        let hit = app.staticTexts["Comité de producto"]
+        XCTAssertTrue(hit.waitForExistence(timeout: 10), "La búsqueda no encontró la reunión")
+        shot(app, "10-busqueda")
+    }
+
+    /// Preguntar a las reuniones: la hoja se abre y acepta una pregunta.
+    func test06Preguntar() {
+        let app = launch(demo: true)
+        let ask = app.buttons["ask-button"]
+        XCTAssertTrue(ask.waitForExistence(timeout: 30))
+        ask.tap()
+        let field = app.textFields["ask-field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "No se abrió Preguntar")
+        field.tap()
+        field.typeText("presupuesto\n")
+        sleep(2)
+        shot(app, "11-preguntar")
+    }
+
+    /// Primer arranque: el onboarding se recorre hasta el final.
+    func test07Onboarding() {
+        let app = launch(demo: false, onboarding: true)
+        let next = app.buttons["onboarding-next"]
+        XCTAssertTrue(next.waitForExistence(timeout: 30), "No apareció el onboarding")
+        shot(app, "12-onboarding-1")
+        for _ in 0..<5 { next.tap(); sleep(1) }
+        shot(app, "13-onboarding-ultimo")
+        let understood = app.switches["onboarding-understood"]
+        if understood.waitForExistence(timeout: 5) { understood.tap() }
+        next.tap()
+        XCTAssertTrue(app.buttons["record-button"].waitForExistence(timeout: 15), "El onboarding no terminó")
     }
 }

@@ -6,17 +6,20 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-# Repositorio PRIVADO: los minutos de macOS cuentan x10 contra los 2.000 del plan
-# Free, o sea ~200 min reales al mes (plan 6.3). Por eso no se compila en cada push
-# de cualquier rama. En repositorio público esto es gratis e ilimitado y se puede
-# ampliar el disparador sin pensarlo.
+# El repositorio es PÚBLICO (comprobado el 2026-09-18; la documentación decía
+# privado y era falso). Los minutos de macOS son gratis e ilimitados. Si algún día
+# pasa a privado: ~200 min reales al mes (x10 sobre los 2.000 del plan Free) y la URL
+# anónima de la Release deja de servir a SideStore.
 
-# Mínimo privilegio para el GITHUB_TOKEN. Por defecto el token del workflow tiene
-# permisos amplios sobre el repositorio; aquí solo hace falta leer el código y, al
-# publicar una Release desde un tag, escribir contenido. Si una acción de terceros
-# resultara comprometida, esto acota lo que podría hacer con el token.
+# Mínimo privilegio para el GITHUB_TOKEN: LECTURA por defecto. Solo el trabajo `ipa`
+# escribe (para publicar la Release). Antes era `contents: write` para todo, y las
+# acciones de terceros de ambos trabajos corrían con un token capaz de escribir en
+# el repositorio (revisión de supply chain 2026-09-18).
+#
+# Acciones ancladas a SHA de commit, no a etiquetas: una etiqueta se puede mover y
+# cambiar lo que se ejecuta. Para actualizar: `gh api repos/<acción>/commits/<tag>`.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: build-${{ github.ref }}
@@ -31,7 +34,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Instalar XcodeGen
         run: brew install xcodegen
@@ -73,6 +76,7 @@ jobs:
             -destination "id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath build \
             -only-testing:EugeniaTests \
+            -skipMacroValidation -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO
 
@@ -146,6 +150,7 @@ jobs:
             -derivedDataPath build \
             -only-testing:EugeniaUITests \
             -resultBundlePath ui.xcresult \
+            -skipMacroValidation -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO
 
@@ -197,7 +202,7 @@ jobs:
 
       - name: Publicar las capturas
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: capturas-${{ github.sha }}
           path: capturas
@@ -259,6 +264,8 @@ jobs:
             --predicate 'subsystem == "com.eugenia.app"' --style compact || true
 
   ipa:
+    permissions:
+      contents: write
     # macos-26, NO macos-15. El primer intento falló con "no such module
     # 'FoundationModels'": la imagen macos-15 trae un Xcode cuyo SDK es iOS 18, y
     # FoundationModels y SpeechAnalyzer solo existen a partir del SDK de iOS 26.
@@ -266,7 +273,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Diagnóstico barato que se queda para siempre: cuando un build falle por el
       # SDK, esta salida dice en dos segundos si el problema es la imagen o el código.
@@ -284,6 +291,19 @@ jobs:
       - name: Comprobar entitlements
         run: python3 scripts/check-entitlements.py
 
+      # Plan 6.5: el file sharing (que expone Documents por USB y en Archivos) NUNCA
+      # puede colarse en la configuración Release.
+      - name: File sharing solo en Debug
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          y = open("project.yml").read()
+          m = re.search(r"Release:\s*\n\s*EUGENIA_FILE_SHARING:\s*\"?(\w+)", y)
+          if not m or m.group(1) != "NO":
+              sys.exit("EUGENIA_FILE_SHARING no es NO en Release")
+          print("ok: Release sin file sharing")
+          PY
+
       - name: Instalar XcodeGen
         run: brew install xcodegen
 
@@ -291,10 +311,10 @@ jobs:
         run: xcodegen generate
 
       - name: Cache de DerivedData
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: build
-          key: dd-${{ runner.os }}-${{ hashFiles('project.yml', 'Eugenia/**/*.swift') }}
+          key: dd-${{ runner.os }}-${{ hashFiles('project.yml', 'Eugenia/**/*.swift', 'Shared/**/*.swift', 'Widgets/**/*.swift') }}
           restore-keys: dd-${{ runner.os }}-
 
       - name: Compilar sin firmar
@@ -306,6 +326,7 @@ jobs:
             -configuration Debug \
             -sdk iphoneos \
             -derivedDataPath build \
+            -skipMacroValidation -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -334,6 +355,9 @@ jobs:
             echo "Falta el icono: no hay CFBundleIcons o Assets.car en el .app"
             exit 1
           fi
+          # La extensión de widgets (Live Activity, control del Centro de Control) tiene
+          # que ir DENTRO del .app; si no, la Live Activity no aparece y nadie lo nota.
+          test -d "$APP/PlugIns/EugeniaWidgets.appex" || { echo "Falta PlugIns/EugeniaWidgets.appex"; ls -la "$APP"; exit 1; }
           # El commit viaja dentro de la app: el informe de diagnóstico lo incluye,
           # así que un fallo siempre se puede atribuir a una versión concreta.
           /usr/libexec/PlistBuddy -c "Add :EugeniaCommit string ${GITHUB_SHA}" "$APP/Info.plist" || \
@@ -358,7 +382,7 @@ jobs:
           echo "dSYM: $DSYM"
           zip -qry Eugenia.dSYM.zip "$DSYM"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: eugenia-${{ github.sha }}
           path: |
@@ -366,15 +390,18 @@ jobs:
             Eugenia.dSYM.zip
           if-no-files-found: error
 
-      # ACCIÓN DE TERCEROS. Está anclada a la etiqueta mayor `v2`, que es mutable:
-      # quien controle el repositorio de la acción puede cambiar lo que ejecuta. Para
-      # este proyecto (repo privado, un solo usuario, sin secretos más allá del token
-      # ya acotado arriba) es un riesgo asumible, pero conviene saberlo. Si algún día
-      # este repositorio guarda secretos, hay que anclarla a un SHA concreto.
+      # Suma de comprobación publicada junto al .ipa: permite verificar a mano que lo
+      # que se instala es lo que compiló CI. El dSYM NO se publica en la Release (el
+      # repo es público y daría símbolos completos a cualquiera): queda solo como
+      # artefacto de CI, que caduca.
+      - name: SHA256SUMS
+        run: shasum -a 256 Eugenia.ipa | tee SHA256SUMS
+
+      # Acción de terceros ANCLADA A SHA (v2). Es la única con permiso de escritura.
       - name: Publicar Release (solo en tags)
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             Eugenia.ipa
-            Eugenia.dSYM.zip
+            SHA256SUMS

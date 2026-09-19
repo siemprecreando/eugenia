@@ -50,8 +50,13 @@ enum DiagnosticsRunner {
 
         let suite: DiagnosticsSuite
         if let data = try? Data(contentsOf: requestURL) {
-            suite = try JSONDecoder().decode(DiagnosticsSuite.self, from: data)
+            // Se borra ANTES de decodificar: un run.json que no decodifica no puede
+            // volver a dispararse en cada arranque (revisión de seguridad 2026-09-18).
             try? FileManager.default.removeItem(at: requestURL)
+            guard data.count < 2_000_000 else { throw DiagnosticsError.planTooLarge }
+            var decoded = try JSONDecoder().decode(DiagnosticsSuite.self, from: data)
+            decoded.cases = Array(decoded.cases.prefix(50))
+            suite = decoded
         } else {
             suite = DiagnosticsSuite(suite: "smoke", cases: [])
         }
@@ -131,6 +136,15 @@ enum DiagnosticsRunner {
                          message: "El caso no trae ni audioFile ni transcript.")
         }
 
+        // SEGURIDAD (revisión 2026-09-18): `audioFile` viene de un fichero que puede
+        // escribir cualquiera con acceso a Documents. Sin esta comprobación,
+        // "../../Library/Application Support/audio/<uuid>.m4a" transcribía una reunión
+        // real y la dejaba como texto en Documents, legible por Archivos o AFC.
+        guard Self.isSafeName(audioName) else {
+            return .init(id: c.id, status: "error", metrics: [:], expected: c.expected,
+                         artifacts: [], logWindow: .init(category: "diag", from: from, to: Date()),
+                         message: "Nombre de audio no permitido: solo un nombre de fichero, sin rutas.")
+        }
         let audioURL = Store.shared.diagnosticsDirectory
             .appendingPathComponent("audio", isDirectory: true)
             .appendingPathComponent(audioName)
@@ -153,7 +167,8 @@ enum DiagnosticsRunner {
             sampler.start()
 
             let t0 = Date()
-            let text = try await transcribeFile(at: audioURL, locale: locale, caseId: c.id)
+            let segments = try await FileTranscription.transcribe(url: audioURL, locale: locale, caseId: c.id)
+            let text = segments.map(\.text).joined(separator: " ")
             let asrMs = Date().timeIntervalSince(t0) * 1000
 
             var metrics: [String: Double] = [
@@ -162,7 +177,8 @@ enum DiagnosticsRunner {
             ]
 
             if let reference = c.referenceTranscript {
-                metrics["wer"] = wer(reference: reference, hypothesis: text)
+                // WER es O(n·m): se acota para que un plan no pueda bloquear el teléfono.
+                metrics["wer"] = wer(reference: String(reference.prefix(60_000)), hypothesis: String(text.prefix(60_000)))
             }
 
             // Guarda la transcripción para que Linux se la pueda traer.
@@ -173,7 +189,10 @@ enum DiagnosticsRunner {
             if c.kind == "pipeline" || c.kind == "summarize" {
                 let t1 = Date()
                 if Summarizer.isAvailable {
-                    let summary = try await Summarizer.summarize(transcript: text, language: c.language)
+                    let summary = try await Summarizer.summarize(
+                        segments: segments, plainTranscript: text, language: c.language, template: .executive,
+                        tone: "neutral", meetingDate: Date(), speakerName: { _ in nil },
+                        checkpoints: [], onCheckpoint: { _ in })
                     metrics["summaryMs"] = Date().timeIntervalSince(t1) * 1000
                     metrics["actionItems"] = Double(summary.actionItems.count)
                 } else {
@@ -204,7 +223,7 @@ enum DiagnosticsRunner {
         } catch {
             return .init(id: c.id, status: "error", metrics: [:], expected: c.expected,
                          artifacts: [], logWindow: .init(category: "diag", from: from, to: Date()),
-                         message: String(describing: error))
+                         message: safeMessage(error))
         }
     }
 
@@ -225,7 +244,10 @@ enum DiagnosticsRunner {
         sampler.start()
         do {
             let t0 = Date()
-            let summary = try await Summarizer.summarize(transcript: transcript, language: c.language)
+            let summary = try await Summarizer.summarize(
+                segments: [], plainTranscript: String(transcript.prefix(200_000)), language: c.language,
+                template: .executive, tone: "neutral", meetingDate: Date(), speakerName: { _ in nil },
+                checkpoints: [], onCheckpoint: { _ in })
             let metrics: [String: Double] = [
                 "summaryMs": Date().timeIntervalSince(t0) * 1000,
                 "actionItems": Double(summary.actionItems.count),
@@ -241,7 +263,7 @@ enum DiagnosticsRunner {
                 ["overview": summary.overview,
                  "decisions": summary.decisions.joined(separator: " | "),
                  "actionItems": summary.actionItems
-                     .map { "[\($0.status)] \($0.text) · \($0.assignee) · t=\($0.atSeconds)" }
+                     .map { "[\($0.status)] \($0.text) · \($0.assignee) · t=\($0.atSeconds)" + ($0.history.isEmpty ? "" : " · " + $0.history.joined(separator: " → ")) }
                      .joined(separator: " | ")]) {
                 try? data.write(to: Store.shared.diagnosticsDirectory
                     .appendingPathComponent(artifactName), options: .atomic)
@@ -264,58 +286,26 @@ enum DiagnosticsRunner {
             _ = sampler.stop()
             return .init(id: c.id, status: "error", metrics: [:], expected: c.expected,
                          artifacts: [], logWindow: .init(category: "summarize", from: from, to: Date()),
-                         message: String(describing: error))
+                         message: safeMessage(error))
         }
-    }
-
-    /// Transcribe un fichero completo usando el MISMO pipeline que el micrófono.
-    /// Que sea el mismo camino es el punto: si aquí pasa, en vivo también.
-    private static func transcribeFile(at url: URL, locale: Locale, caseId: String) async throws -> String {
-        let transcriber = Transcriber()
-        let segments = try await transcriber.start(locale: locale, caseId: caseId)
-
-        // El consumidor arranca ANTES de alimentar: si se consume después de
-        // finalizar el analizador, se depende del buffer del AsyncStream para no
-        // perder segmentos. Mejor no depender de eso.
-        let collector = Task<[String], Never> {
-            var finals: [String] = []
-            for await segment in segments where segment.isFinal {
-                finals.append(segment.text)
-            }
-            return finals
-        }
-
-        // Mismo problema de orden que en Recorder: un `Task` por buffer no conserva
-        // la secuencia. Aquí importa todavía más, porque las métricas de WER que
-        // salgan de aquí son las que deciden la puerta de la Fase 0 — un desorden
-        // silencioso las falsearía sin dar ningún error.
-        let (buffers, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream(
-            bufferingPolicy: .unbounded
-        )
-        let pump = Task.detached(priority: .userInitiated) {
-            for await buffer in buffers { await transcriber.feed(buffer) }
-        }
-
-        let source = try FileAudioSource(url: url, realtimeFactor: 0)
-        let done = AsyncStream<Void>.makeStream()
-        try source.start(onBuffer: { buffer in
-            continuation.yield(buffer)
-        }, onFinish: {
-            done.continuation.finish()
-        })
-
-        for await _ in done.stream {}
-        // Cerrar la cola y ESPERAR a que se drene, en vez de dormir un rato y confiar.
-        // El `sleep` de la primera versión era una carrera: en una reunión larga o un
-        // dispositivo caliente, 1,5 s no bastan y se perdía el final de la prueba.
-        continuation.finish()
-        await pump.value
-        await transcriber.finish()
-
-        return await collector.value.joined(separator: " ")
     }
 
     // MARK: - Utilidades
+
+    enum DiagnosticsError: Error { case planTooLarge }
+
+    /// Un solo componente de nombre, sin rutas ni `..`.
+    nonisolated static func isSafeName(_ name: String) -> Bool {
+        guard !name.isEmpty, name.count <= 120, name != ".", name != ".." else { return false }
+        return name.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil
+    }
+
+    /// El texto del error SIN `String(describing:)`: los de FoundationModels pueden
+    /// llevar dentro el fragmento de transcripción, y el informe vive en Documents.
+    private static func safeMessage(_ error: Error) -> String {
+        let ns = error as NSError
+        return "\(type(of: error)) domain=\(ns.domain) code=\(ns.code)"
+    }
 
     /// WER clásico por distancia de edición sobre palabras.
     ///

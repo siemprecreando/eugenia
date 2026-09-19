@@ -35,9 +35,44 @@ enum AudioSourceError: Error, CustomStringConvertible {
 
 // MARK: - Micrófono
 
+/// Perfil acústico de la captura (plan 5.1 y Fase 4, "Modo Reunión").
+enum MicProfile: String, CaseIterable, Identifiable {
+    /// Sala: varias personas, algunas lejos. `.default`, SIN procesado de voz.
+    case room
+    /// Llamada en altavoz o una sola persona cerca: `.voiceChat` cancela eco y ruido.
+    case speakerCall
+    /// Dictado: una voz, muy cerca. `.measurement` sin AGC, lo más limpio.
+    case dictation
+
+    var id: String { rawValue }
+    var mode: AVAudioSession.Mode {
+        switch self {
+        case .room: return .default
+        case .speakerCall: return .voiceChat
+        case .dictation: return .measurement
+        }
+    }
+}
+
+/// Lo que le pasa al micrófono durante una grabación y el `Recorder` tiene que saber.
+enum MicEvent: Sendable {
+    case interrupted            // llamada, Siri, alarma: el sistema paró el audio
+    case resumed(reason: String) // volvió a capturar (tras interrupción o cambio de ruta)
+    case resumeFailed(String)   // no se pudo volver: el Recorder para y guarda
+}
+
 final class MicrophoneAudioSource: AudioSource {
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private var running = false
+    private var onBuffer: ((AVAudioPCMBuffer) -> Void)?
+    private var observers: [NSObjectProtocol] = []
+    private let profile: MicProfile
+    /// Se llama en el hilo principal.
+    var onEvent: ((MicEvent) -> Void)?
+
+    init(profile: MicProfile = .room) { self.profile = profile }
+
+    deinit { observers.forEach(NotificationCenter.default.removeObserver) }
 
     /// OJO: solo es válido DESPUÉS de `prepare()`. Antes de activar la sesión de
     /// audio, `outputFormat(forBus:)` devuelve un formato con 0 Hz — y un fichero
@@ -45,15 +80,25 @@ final class MicrophoneAudioSource: AudioSource {
     /// que es la peor forma de enterarse. Por eso `prepare()` existe.
     var format: AVAudioFormat { engine.inputNode.outputFormat(forBus: 0) }
 
+    /// Permiso de micrófono. Sin comprobarlo, un permiso denegado no da error: el motor
+    /// entrega SILENCIO y se guardaba una reunión "vacía" sin avisar.
+    static func requestPermission() async -> Bool {
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted: return true
+        case .denied: return false
+        default: return await AVAudioApplication.requestRecordPermission()
+        }
+    }
+
     /// Activa la sesión de audio. Idempotente. Hay que llamarlo antes de leer
     /// `format` y antes de `start()`.
     ///
-    /// .record + .default a propósito: NO .voiceChat. El procesamiento de voz de
+    /// .record + .default por defecto: NO .voiceChat. El procesamiento de voz de
     /// Apple está optimizado para el interlocutor cercano y degrada la voz lejana,
     /// que es justo el caso de uso de este producto (plan 5.1).
     func prepare() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .default, options: [.allowBluetooth])
+        try session.setCategory(.record, mode: profile.mode, options: [.allowBluetooth])
         try session.setActive(true)
 
         let fmt = engine.inputNode.outputFormat(forBus: 0)
@@ -63,24 +108,86 @@ final class MicrophoneAudioSource: AudioSource {
     }
 
     func start(onBuffer: @escaping (AVAudioPCMBuffer) -> Void, onFinish: @escaping () -> Void) throws {
+        self.onBuffer = onBuffer
         try prepare()
+        try startEngine()
+        running = true
+        observe()
+    }
 
+    private func startEngine() throws {
         let input = engine.inputNode
         let fmt = input.outputFormat(forBus: 0)
+        guard fmt.sampleRate > 0 else { throw AudioSourceError.invalidInputFormat(fmt.sampleRate, fmt.channelCount) }
+        let deliver = onBuffer
+        input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 4096, format: fmt) { buffer, _ in
-            onBuffer(buffer)
+            deliver?(buffer)
         }
         engine.prepare()
         try engine.start()
-        running = true
-        Log.event(Log.capture, "mic.start", "sr=\(fmt.sampleRate) ch=\(fmt.channelCount)")
+        Log.event(Log.capture, "mic.start", "sr=\(fmt.sampleRate) ch=\(fmt.channelCount) mode=\(profile.rawValue)")
+    }
+
+    /// Vuelve a capturar con el formato NUEVO de la entrada. Tras unos AirPods la
+    /// frecuencia cambia (48k → 16/24k): el tap viejo ya no sirve.
+    private func restart(reason: String) {
+        guard running else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            try startEngine()
+            Log.event(Log.capture, "mic.resumed", "reason=\(reason)")
+            onEvent?(.resumed(reason: reason))
+        } catch {
+            Log.failure(Log.capture, "mic.resume", error)
+            onEvent?(.resumeFailed(Recorder.userMessage(for: error)))
+        }
+    }
+
+    /// REVISIÓN 2026-09-18: nada de esto existía. Una llamada, Siri, una alarma o
+    /// conectar unos AirPods paraban el motor para siempre mientras la pantalla seguía
+    /// diciendo GRABANDO y el contador corría. El resto de la reunión se perdía.
+    private func observe() {
+        let nc = NotificationCenter.default
+        let session = AVAudioSession.sharedInstance()
+        observers.append(nc.addObserver(forName: AVAudioSession.interruptionNotification,
+                                        object: session, queue: .main) { [weak self] note in
+            guard let self, let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            switch type {
+            case .began:
+                Log.event(Log.capture, "mic.interrupted")
+                self.onEvent?(.interrupted)
+            case .ended:
+                // Se reanuda SIEMPRE, aunque el sistema no ponga `.shouldResume`: esto es
+                // una grabadora, y el usuario espera que siga grabando al colgar.
+                self.restart(reason: "interruption")
+            @unknown default: break
+            }
+        })
+        observers.append(nc.addObserver(forName: .AVAudioEngineConfigurationChange,
+                                        object: engine, queue: .main) { [weak self] _ in
+            self?.restart(reason: "config")
+        })
+        observers.append(nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification,
+                                        object: session, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            // Tras un reinicio de los servicios de medios el motor viejo es inservible.
+            self.engine = AVAudioEngine()
+            try? self.prepare()
+            self.restart(reason: "mediaReset")
+        })
     }
 
     func stop() {
         guard running else { return }
+        running = false
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        running = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         Log.event(Log.capture, "mic.stop")
     }
@@ -121,7 +228,9 @@ final class FileAudioSource: AudioSource {
         let frames = chunkFrames
         let factor = realtimeFactor
         Task.detached { [weak self] in
-            guard let self else { return }
+            // Antes: `guard let self else { return }` sin llamar a onFinish, y quien
+            // esperaba el final del fichero se quedaba colgado para siempre.
+            guard let self else { onFinish(); return }
             while !self.cancelled {
                 guard let buffer = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames) else { break }
                 do {

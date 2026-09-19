@@ -22,6 +22,8 @@ enum Log {
     static let summarize = Logger(subsystem: subsystem, category: "summarize")
     static let storage   = Logger(subsystem: subsystem, category: "storage")
     static let diag      = Logger(subsystem: subsystem, category: "diag")
+    static let queue     = Logger(subsystem: subsystem, category: "queue")
+    static let system    = Logger(subsystem: subsystem, category: "system")
 
     /// Marca de evento legible desde el syslog. `caseId` permite recortar la ventana
     /// temporal de un caso de prueba concreto (ver DiagnosticsReport.LogWindow).

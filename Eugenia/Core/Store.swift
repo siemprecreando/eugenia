@@ -1,33 +1,10 @@
 import Foundation
 
-/// Persistencia mínima en disco. Plan, sección 7 (modelo de datos) reducido a lo que
-/// necesita la Fase 1: un índice JSON más los ficheros de audio.
+/// Persistencia en disco. Plan, sección 7 reducido a un índice JSON más ficheros.
 ///
-/// Deliberadamente NO se usa SwiftData todavía. Para la primera versión instalable
-/// interesa que compile a la primera y que el formato sea legible desde Linux por
-/// AFC, no tener migraciones. GRDB/SwiftData entran cuando haga falta FTS5 (Fase 2).
-struct Note: Codable, Identifiable, Equatable {
-    var id: UUID
-    var title: String
-    var createdAt: Date
-    var duration: TimeInterval
-    var language: String
-    var audioFileName: String?
-    var transcript: String
-    var summaryOverview: String
-    var decisions: [String]
-    var actionItems: [StoredActionItem]
-    var state: String   // recording | transcribed | summarized | failed
-    var failure: String?
-}
-
-struct StoredActionItem: Codable, Equatable {
-    var text: String
-    var assignee: String
-    var status: String
-    var atSeconds: Int
-}
-
+/// Deliberadamente NO SQLite/SwiftData: un solo usuario, cientos de notas como mucho,
+/// y un índice legible desde Linux por AFC vale más que las migraciones. La búsqueda
+/// (plan 5.6) se hace en memoria sobre este mismo índice: ver `SearchIndex`.
 @MainActor
 final class Store: ObservableObject {
     static let shared = Store()
@@ -35,6 +12,12 @@ final class Store: ObservableObject {
     @Published private(set) var notes: [Note] = []
 
     private let fm = FileManager.default
+    /// Si el índice no se pudo leer, NO se vuelve a escribir: escribir encima de un
+    /// índice que no entendemos es borrar todas las reuniones (revisión 2026-09-18).
+    private(set) var indexIsReadOnly = false
+    /// Notas borradas en esta sesión. Un resumen que termina DESPUÉS del borrado no
+    /// puede resucitarlas al guardar.
+    private var deletedIDs: Set<UUID> = []
 
     /// SEGURIDAD — el reparto de carpetas no es organización, es aislamiento.
     ///
@@ -45,7 +28,14 @@ final class Store: ObservableObject {
     ///
     /// Por eso: en `Documents/` SOLO los diagnósticos, que es lo que de verdad hay que
     /// sacar del teléfono. El audio, la transcripción y el índice viven en Application
-    /// Support, que AFC no vende ni con file sharing activado.
+    /// Support.
+    ///
+    /// MATIZ MEDIDO EL 2026-09-18: eso protege del file sharing (VendDocuments), pero
+    /// una app firmada con certificado de DESARROLLO —como la que instala SideStore con
+    /// Apple ID gratuito— también admite VendContainer: cualquier ordenador emparejado
+    /// y con el teléfono desbloqueado puede leer el contenedor entero, Application
+    /// Support incluido. No hay forma de evitarlo desde la app con firma gratuita. La
+    /// defensa real es no emparejar el iPhone con ordenadores ajenos.
     var documents: URL {
         fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
@@ -72,6 +62,8 @@ final class Store: ObservableObject {
         // se bloquea.
         try? fm.setAttributes([.protectionKey: FileProtectionType.completeUnlessOpen],
                               ofItemAtPath: audioDirectory.path)
+        excludeFromBackup(audioDirectory)
+        excludeFromBackup(privateRoot)
         load()
     }
 
@@ -81,44 +73,130 @@ final class Store: ObservableObject {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             notes = try decoder.decode([Note].self, from: data).sorted { $0.createdAt > $1.createdAt }
+            indexIsReadOnly = false
         } catch {
             Log.failure(Log.storage, "index.decode", error)
+            // Copia intacta del índice ilegible y bloqueo de escritura. Sin esto, el
+            // siguiente `save()` sobrescribía notes.json con UNA nota y el resto de
+            // reuniones desaparecía sin rastro.
+            let backup = privateRoot.appendingPathComponent("notes.corrupt-\(ReportStamp.string(from: Date())).json")
+            try? fm.copyItem(at: indexURL, to: backup)
+            indexIsReadOnly = true
             notes = []
         }
     }
 
     func save(_ note: Note) {
+        guard !deletedIDs.contains(note.id) else { return }
         if let i = notes.firstIndex(where: { $0.id == note.id }) {
             notes[i] = note
         } else {
             notes.insert(note, at: 0)
+            notes.sort { $0.createdAt > $1.createdAt }
         }
         persist()
     }
 
+    func note(_ id: UUID) -> Note? { notes.first { $0.id == id } }
+
+    /// Modificación puntual sin pisar lo que otro trabajo haya guardado entretanto:
+    /// se relee la nota actual del índice y se aplica el cambio sobre ella.
+    func update(_ id: UUID, _ change: (inout Note) -> Void) {
+        guard var n = note(id) else { return }
+        change(&n)
+        save(n)
+    }
+
     func delete(_ note: Note) {
-        if let name = note.audioFileName {
-            try? fm.removeItem(at: audioDirectory.appendingPathComponent(name))
-        }
+        deletedIDs.insert(note.id)
+        deleteAudio(of: note)
+        DiarizationCache.shared.remove(noteID: note.id)
         notes.removeAll { $0.id == note.id }
         persist()
     }
 
+    func deleteAudio(of note: Note) {
+        for name in note.allAudioFiles {
+            try? fm.removeItem(at: audioURL(name))
+        }
+    }
+
+    func audioURL(_ name: String) -> URL {
+        // El nombre viene del índice; aun así, solo el último componente: nada de
+        // rutas que salgan de audio/.
+        audioDirectory.appendingPathComponent(URL(fileURLWithPath: name).lastPathComponent)
+    }
+
+    var folders: [String] {
+        Array(Set(notes.map(\.folder).filter { !$0.isEmpty })).sorted()
+    }
+
+    /// Tamaño en disco del audio de una nota, en bytes.
+    func audioBytes(of note: Note) -> Int64 {
+        note.allAudioFiles.reduce(0) { acc, name in
+            let size = (try? fm.attributesOfItem(atPath: audioURL(name).path)[.size] as? NSNumber)?.int64Value ?? 0
+            return acc + size
+        }
+    }
+
+    // MARK: - Recuperación tras cierre inesperado
+
+    /// Al arrancar: una nota en `recording` significa que la app murió grabando (jetsam,
+    /// crash, el usuario la cerró). El audio va en trozos, así que los trozos cerrados
+    /// son legibles; el último puede no serlo. La transcripción se fue guardando por el
+    /// camino. Se marca `interrupted` y entra en la cola: el usuario no pierde la reunión.
+    func recoverInterruptedRecordings(except activeID: UUID?) {
+        for n in notes where n.state == NoteState.recording && n.id != activeID {
+            var fixed = n
+            fixed.state = NoteState.interrupted
+            // Trozos vacíos o ilegibles fuera: no sirven y romperían el reproductor.
+            fixed.audioParts = n.audioParts.filter { AudioParts.isReadable(audioURL($0)) }
+            if fixed.duration == 0 { fixed.duration = AudioParts.totalDuration(fixed.audioParts.map(audioURL)) }
+            if fixed.segments.last(where: { !$0.isMarker }) != nil {
+                fixed.segments.append(TranscriptSegment(text: "La grabación se interrumpió aquí",
+                                                        start: fixed.duration, end: fixed.duration,
+                                                        isMarker: true))
+            }
+            fixed.transcript = fixed.renderedTranscript(withSpeakers: false)
+            save(fixed)
+            Log.event(Log.storage, "recover.recording", "note=\(n.id.uuidString) parts=\(fixed.audioParts.count)")
+        }
+    }
+
     private func persist() {
+        guard !indexIsReadOnly else {
+            Log.event(Log.storage, "index.save.blocked", "notes=\(notes.count)")
+            return
+        }
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.outputFormatting = [.sortedKeys]
             let data = try encoder.encode(notes)
             // Mismo razonamiento que en el init: `.completeFileProtection` haría
             // fallar este guardado cuando se para una grabación con el teléfono
             // bloqueado, y perderíamos la nota. `.completeUnlessOpen` cifra igual en
             // reposo sin romper el caso de uso real.
             try data.write(to: indexURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+            // La escritura atómica crea un fichero NUEVO: la exclusión de copia de
+            // seguridad hay que volver a ponerla cada vez.
+            excludeFromBackup(indexURL)
             Log.event(Log.storage, "index.save", "notes=\(notes.count)")
         } catch {
             Log.failure(Log.storage, "index.save", error)
         }
+    }
+
+    /// PRIVACIDAD — sin esto, iCloud Backup subía audio y transcripciones a Apple
+    /// (cifrado de extremo a extremo solo con Protección Avanzada de Datos). La promesa
+    /// es "tus reuniones no salen de tu iPhone": tampoco por la copia de seguridad.
+    /// Contrapartida asumida: si se pierde el teléfono, se pierden las reuniones; para
+    /// eso está la exportación cifrada (plan, Fase 4).
+    func excludeFromBackup(_ url: URL) {
+        var u = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? u.setResourceValues(values)
     }
 
     func freeDiskMB() -> Int {
@@ -136,7 +214,24 @@ extension Store {
     /// disco ni sobrevive al cierre de la app. Si algún día esto escribiera, una
     /// build de depuración contaminaría el índice real del teléfono.
     func seedDemo() {
-        notes = Note.demoSet
+        var demo = Note.demoSet
+        demo[0].segments = [
+            TranscriptSegment(text: "Antes de nada, el presupuesto del trimestre. Marta, ¿lo llevas tú?", start: 12, end: 16, speaker: "S1"),
+            TranscriptSegment(text: "Lo puedo llevar, pero necesito los números de soporte.", start: 17, end: 21, speaker: "S2"),
+            TranscriptSegment(text: "Vale, pues lo cierras tú y lo vemos el viernes.", start: 22, end: 25, speaker: "S1"),
+            TranscriptSegment(text: "Llamada entrante", start: 1_200, end: 1_200, isMarker: true),
+            TranscriptSegment(text: "Sinceramente, con la migración encima no voy a llegar. ¿Lo coges tú?", start: 2_510, end: 2_515, speaker: "S2"),
+            TranscriptSegment(text: "Está bien, me lo quedo yo.", start: 2_516, end: 2_518, speaker: "S1"),
+            TranscriptSegment(text: "Pensándolo mejor, hasta que no cerremos la migración esto no se toca.", start: 3_490, end: 3_500, speaker: "S1")
+        ]
+        demo[0].speakerNames = ["S1": "Javier", "S2": "Marta"]
+        demo[0].keyPoints = [SummaryPoint(text: "El presupuesto pasa de Marta a Javier", atSeconds: 2_515),
+                             SummaryPoint(text: "La migración es la prioridad única", atSeconds: 3_490)]
+        demo[0].actionItems[0].history = ["Asignado a Marta en 00:12", "Reasignado de Marta a Javier en 41:55", "Aparcado en 58:10"]
+        demo[0].folder = "Producto"
+        demo[0].attendees = ["Javier", "Marta"]
+        demo[1].folder = "Equipo"
+        notes = demo
         Log.event(Log.storage, "demo.seed", "notes=\(notes.count)")
     }
 }
@@ -214,7 +309,7 @@ extension Note {
                 summaryOverview: "",
                 decisions: [],
                 actionItems: [],
-                state: "transcribed",
+                state: NoteState.queued,
                 failure: nil
             )
         ]
