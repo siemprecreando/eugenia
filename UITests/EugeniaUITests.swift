@@ -189,6 +189,11 @@ final class EugeniaUITests: XCTestCase {
         gear.tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 10),
                       "Los ajustes no salen en inglés")
+        // Los nombres de plantilla también (salían en español: se pintaban con un
+        // String sin localizar).
+        let plantilla = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@", "Executive summary")).firstMatch
+        XCTAssertTrue(plantilla.waitForExistence(timeout: 5), "El nombre de la plantilla no sale en inglés")
         shot(app, "14-ingles-ajustes")
     }
 }

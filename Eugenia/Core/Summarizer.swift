@@ -137,11 +137,11 @@ enum SummaryTemplate: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .executive: return "Resumen ejecutivo"
-        case .actionItems: return "Tareas y responsables"
-        case .detailed: return "Acta detallada"
-        case .oneOnOne: return "Reunión 1:1"
-        case .sales: return "Llamada comercial"
+        case .executive: return String(localized: "Resumen ejecutivo")
+        case .actionItems: return String(localized: "Tareas y responsables")
+        case .detailed: return String(localized: "Acta detallada")
+        case .oneOnOne: return String(localized: "Reunión 1:1")
+        case .sales: return String(localized: "Llamada comercial")
         }
     }
 

@@ -47,7 +47,7 @@ struct SettingsView: View {
                         Button("Olvidar todas las voces", role: .destructive) { confirmWipeVoices = true }
                     }
                 } header: { Text("Hablantes") } footer: {
-                    Text("Separar hablantes descarga una vez unos modelos (~50 MB) y después funciona sin conexión. El reconocimiento de voces guarda una huella de voz por persona: es un dato biométrico, solo se guarda en este iPhone, no entra en copias de seguridad y se borra aquí.")
+                    Text("Separar hablantes funciona sin conexión: los modelos van dentro de la app. El reconocimiento de voces guarda una huella de voz por persona: es un dato biométrico, solo se guarda en este iPhone, no entra en copias de seguridad y se borra aquí.")
                 }
                 Section("Almacenamiento y privacidad") {
                     NavigationLink("Gestión de espacio") { StorageView() }

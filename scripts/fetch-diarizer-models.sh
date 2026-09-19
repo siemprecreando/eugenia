@@ -13,8 +13,10 @@ cd "$(dirname "$0")/.."
 
 REPO="FluidInference/speaker-diarization-coreml"
 COMMIT="1ed7a662fdc7109e36d822db793ee6eebdaf8594"
-# FluidAudio busca <directorio>/speaker-diarization-coreml/<modelo>.
-DEST="DiarizerModels/speaker-diarization-coreml"
+# FluidAudio busca <directorio>/speaker-diarization/<modelo>: el nombre del repo SIN
+# "-coreml" (Repo.folderName). Con el nombre del repo tal cual, en modo sin red falla
+# con modelMissing — lo cazó la prueba de CI, no el teléfono.
+DEST="DiarizerModels/speaker-diarization"
 MANIFEST="$PWD/scripts/diarizer-models.sha256"
 
 if command -v sha256sum >/dev/null; then SHA="sha256sum"; else SHA="shasum -a 256"; fi

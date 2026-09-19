@@ -48,7 +48,7 @@ final class DiarizationTests: XCTestCase {
                                  "Los modelos de hablantes no están dentro de la app")
         for m in ["Segmentation", "FBank", "Embedding", "PldaRho"] {
             XCTAssertTrue(FileManager.default.fileExists(
-                atPath: root.appendingPathComponent("speaker-diarization-coreml/\(m).mlmodelc/weights/weight.bin").path), m)
+                atPath: root.appendingPathComponent("speaker-diarization/\(m).mlmodelc/weights/weight.bin").path), m)
         }
 
         // 2) Audio: A, B, A, B — 4 turnos de ~4 s.

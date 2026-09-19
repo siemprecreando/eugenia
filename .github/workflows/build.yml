@@ -376,7 +376,7 @@ jobs:
           test -d "$APP/PlugIns/EugeniaWidgets.appex" || { echo "Falta PlugIns/EugeniaWidgets.appex"; ls -la "$APP"; exit 1; }
           # Los modelos de hablantes van dentro (la app no los descarga): sin ellos la
           # separación de hablantes falla en el teléfono.
-          test -f "$APP/DiarizerModels/speaker-diarization-coreml/Segmentation.mlmodelc/weights/weight.bin" \
+          test -f "$APP/DiarizerModels/speaker-diarization/Segmentation.mlmodelc/weights/weight.bin" \
             || { echo "Faltan los modelos de hablantes en el .app"; exit 1; }
           # El commit viaja dentro de la app: el informe de diagnóstico lo incluye,
           # así que un fallo siempre se puede atribuir a una versión concreta.
