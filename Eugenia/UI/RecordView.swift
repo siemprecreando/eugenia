@@ -57,6 +57,7 @@ struct RecordView: View {
         }
         .padding(.vertical, 32)
         .task {
+            recorder.resetIfFinished()
             if recorder.state == .idle { await recorder.start() }
         }
     }

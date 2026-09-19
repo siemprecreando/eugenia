@@ -77,6 +77,21 @@ final class Recorder: ObservableObject {
 
     // MARK: - Ciclo de grabación
 
+    /// Deja el grabador listo para otra reunión si la anterior ya TERMINÓ, bien o con
+    /// error. Sin esto, tras un resumen fallido (p. ej. Apple Intelligence apagado) el
+    /// estado se quedaba en `.failed` para siempre: al pulsar Grabar otra vez no
+    /// empezaba nada y la pantalla enseñaba el texto y el tiempo de la grabación
+    /// anterior. La nota fallida ya está guardada en el Store; aquí solo se limpia la
+    /// pantalla. No toca una grabación en curso ni un resumen a medias.
+    func resetIfFinished() {
+        guard case .failed = state else { return }
+        state = .idle
+        finals = []
+        liveText = ""
+        volatileText = ""
+        elapsed = 0
+    }
+
     func start() async {
         guard state == .idle else { return }
         finals = []
