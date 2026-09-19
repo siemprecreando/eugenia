@@ -8,7 +8,13 @@ dispositivo**. Plan completo en [`../plan-summary-ai-iphone.md`](../plan-summary
 - **Se instala** con SideStore, que firma en el propio teléfono con un Apple ID gratuito.
 - **Se prueba** desde Linux con `pymobiledevice3`, contra el teléfono real.
 
-> ### Estado: COMPILA. Nunca ejecutado en un teléfono.
+> ### Estado: INSTALADA Y ARRANCA EN EL IPHONE (2026-09-18). Bucle de pruebas en verde.
+>
+> v0.1.1 instalada con SideStore en el iPhone 17e (iOS 26.6.1). `smoke` en verde
+> desde Linux: empujar plan → lanzar la app → recoger informe, sin tocar el teléfono.
+> El informe dice `IA unavailable(appleIntelligenceNotEnabled)`: hay que activar
+> Apple Intelligence en el teléfono antes de probar resúmenes. **Sin probar aún:**
+> grabar, transcribir y resumir en el dispositivo (no hay corpus de audio todavía).
 >
 > El build pasa en GitHub Actions (`macos-26`, Xcode 26.6, SDK iOS 26.5) y produce un
 > `.ipa` con un binario arm64 de dispositivo y su dSYM. Hicieron falta **cuatro
@@ -90,18 +96,25 @@ https://github.com/siemprecreando/eugenia/releases/latest/download/Eugenia.ipa
 Recuerda que la firma **caduca a los 7 días** y SideStore la refresca sola, siempre
 que tenga el VPN local (LocalDevVPN) configurado.
 
-**4. Conectar el teléfono a esta máquina, una vez:**
+**4. Probar** (sin instalar nada en esta máquina: pymobiledevice3 corre en un
+contenedor, `scripts/devtools/`, que se construye solo la primera vez):
 
 ```bash
-./scripts/setup-device.sh
+./scripts/devtest-container.sh smoke     # ¿funciona el bucle entero?
+./scripts/devtest-container.sh asr       # la suite de ASR sobre el corpus
 ```
 
-**5. Probar:**
+El script detecta solo el identificador con el que SideStore instaló la app
+(`com.eugenia.app.<TEAMID>`). `setup-device.sh` queda para máquinas con
+pymobiledevice3 nativo; aquí no hace falta: el modo desarrollador se activó con
+`amfi reveal-developer-mode` y la imagen de desarrollador la monta `devtest.sh`.
 
-```bash
-./scripts/devtest.sh smoke     # ¿funciona el bucle entero?
-./scripts/devtest.sh asr       # la suite de ASR sobre el corpus
-```
+> **Trampas del bucle de pruebas (2026-09-18):**
+> - pymobiledevice3 pasó a **API asíncrona**; `afc.py` ya vale para las dos.
+> - En iOS 17+ los servicios de desarrollador (lanzar la app, capturas) van por un
+>   túnel. `remote tunneld` no encuentra el iPhone en Bazzite; **`--userspace`** sí,
+>   sin root. Captura de pantalla: `pymobiledevice3 developer dvt screenshot --userspace x.png`.
+> - `apps list | grep -q` con `pipefail` da **falso negativo** (SIGPIPE sobre ~1 MB).
 
 `smoke` no necesita audio ni LLM: solo comprueba que Linux puede empujar un plan de
 pruebas, lanzar la app, y recuperar el informe. **Es el spike 8 del plan y es lo
@@ -127,6 +140,8 @@ scripts/
   make-icon.py               dibuja el icono (Resources/Assets.xcassets/AppIcon)
   setup-device.sh            la conexión de una sola vez
   devtest.sh                 el bucle: lanzar, observar, recoger, diagnosticar
+  devtest-container.sh       lo mismo, dentro del contenedor devtools (Bazzite)
+  devtools/Containerfile     python + pymobiledevice3
   afc.py                     acceso a Documents/ de la app por house_arrest
 suites/                      planes de prueba que consume el DiagnosticsRunner
 Eugenia/

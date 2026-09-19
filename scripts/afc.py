@@ -16,11 +16,20 @@ que el spike 8 del plan tiene que cerrar.
 import sys
 import os
 import argparse
+import asyncio
+import inspect
 
 BUNDLE = os.environ.get("EUGENIA_BUNDLE", "com.eugenia.app")
 
 
-def connect():
+async def _(value):
+    """Espera `value` si es awaitable. pymobiledevice3 pasó a API asíncrona en 2026
+    (create_using_usbmux, HouseArrestService.create y las operaciones AFC son
+    corrutinas); así el script vale para la versión vieja y la nueva."""
+    return await value if inspect.isawaitable(value) else value
+
+
+async def connect():
     try:
         from pymobiledevice3.lockdown import create_using_usbmux
         from pymobiledevice3.services.house_arrest import HouseArrestService
@@ -31,11 +40,13 @@ def connect():
             "Si el paquete está instalado, la ruta de importación ha cambiado: "
             "ajusta scripts/afc.py (spike 8 del plan)."
         )
-    lockdown = create_using_usbmux()
-    return HouseArrestService(lockdown=lockdown, bundle_id=BUNDLE)
+    lockdown = await _(create_using_usbmux())
+    if hasattr(HouseArrestService, "create"):          # API nueva
+        return await HouseArrestService.create(lockdown, bundle_id=BUNDLE)
+    return HouseArrestService(lockdown=lockdown, bundle_id=BUNDLE)  # API vieja
 
 
-def resolve(afc, path):
+async def resolve(afc, path):
     """Normaliza la ruta según lo que AFC esté sirviendo de raíz.
 
     house_arrest puede montar la RAÍZ DEL CONTENEDOR (y entonces la ruta correcta es
@@ -48,7 +59,7 @@ def resolve(afc, path):
     """
     path = "/" + path.strip("/")
     try:
-        root = set(afc.listdir("/"))
+        root = set(await _(afc.listdir("/")))
     except Exception:
         return path
 
@@ -61,37 +72,37 @@ def resolve(afc, path):
     return path
 
 
-def cmd_ls(afc, args):
-    for name in afc.listdir(resolve(afc, args.remote)):
+async def cmd_ls(afc, args):
+    for name in await _(afc.listdir(await resolve(afc, args.remote))):
         print(name)
 
 
-def cmd_pull(afc, args):
-    data = afc.get_file_contents(resolve(afc, args.remote))
+async def cmd_pull(afc, args):
+    data = await _(afc.get_file_contents(await resolve(afc, args.remote)))
     os.makedirs(os.path.dirname(os.path.abspath(args.local)) or ".", exist_ok=True)
     with open(args.local, "wb") as fh:
         fh.write(data)
     print(f"{args.remote} -> {args.local} ({len(data)} bytes)")
 
 
-def cmd_push(afc, args):
+async def cmd_push(afc, args):
     with open(args.local, "rb") as fh:
         data = fh.read()
-    remote = resolve(afc, args.remote)
+    remote = await resolve(afc, args.remote)
     # Crear los directorios intermedios: la primera vez, Documents/diagnostics/ no
     # existe todavía en el teléfono y set_file_contents no lo crea solo.
     parts = remote.strip("/").split("/")[:-1]
     for i in range(len(parts)):
         try:
-            afc.makedirs("/" + "/".join(parts[: i + 1]))
+            await _(afc.makedirs("/" + "/".join(parts[: i + 1])))
         except Exception:
             pass
-    afc.set_file_contents(remote, data)
+    await _(afc.set_file_contents(remote, data))
     print(f"{args.local} -> {args.remote} ({len(data)} bytes)")
 
 
-def cmd_rm(afc, args):
-    afc.rm(resolve(afc, args.remote))
+async def cmd_rm(afc, args):
+    await _(afc.rm(await resolve(afc, args.remote)))
     print(f"borrado {args.remote}")
 
 
@@ -105,8 +116,17 @@ def main():
     p = sub.add_parser("rm");   p.add_argument("remote");                                p.set_defaults(fn=cmd_rm)
 
     args = parser.parse_args()
-    afc = connect()
-    args.fn(afc, args)
+    asyncio.run(run(args))
+
+
+async def run(args):
+    afc = await connect()
+    try:
+        await args.fn(afc, args)
+    finally:
+        close = getattr(afc, "aclose", None) or getattr(afc, "close", None)
+        if close:
+            await _(close())
 
 
 if __name__ == "__main__":

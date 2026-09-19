@@ -14,7 +14,9 @@ if ! printf '%s' "$SUITE" | grep -qE '^[A-Za-z0-9_-]{1,40}$'; then
   echo "Nombre de suite no válido: '$SUITE' (solo letras, dígitos, guion y guion bajo)" >&2
   exit 2
 fi
-BUNDLE="${EUGENIA_BUNDLE:-com.eugenia.app}"
+# SideStore instala con el identificador de tu equipo añadido
+# (com.eugenia.app.F966AVYAKR). Si no se fija EUGENIA_BUNDLE, se detecta en el paso 1.
+BUNDLE="${EUGENIA_BUNDLE:-}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$ROOT/run/$RUN_ID"
@@ -41,7 +43,17 @@ if ! pymobiledevice3 usbmux list >/dev/null 2>&1; then
   exit 2
 fi
 
-if ! pymobiledevice3 apps list 2>/dev/null | grep -q "$BUNDLE"; then
+# Primero a una variable y luego grep SIN tubería: con `pipefail`, tanto
+# `apps list | grep -q` como `printf "$APPS" | grep -q` dan FALSO NEGATIVO — grep -q
+# sale al primer acierto, el escritor muere por SIGPIPE (la lista pesa ~1 MB) y la
+# tubería entera cuenta como fallo aunque la app esté instalada.
+APPS=$(pymobiledevice3 apps list --type User 2>/dev/null || true)
+if [ -z "$BUNDLE" ]; then
+  BUNDLE=$(grep -oE '^    "com\.eugenia\.app(\.[A-Z0-9]+)?"' <<< "$APPS" | tr -d ' "' | head -1)
+  BUNDLE="${BUNDLE:-com.eugenia.app}"
+fi
+export EUGENIA_BUNDLE="$BUNDLE"      # afc.py lo lee de aquí
+if ! grep -q "\"$BUNDLE\"" <<< "$APPS"; then
   fail "La app $BUNDLE no está instalada en el teléfono."
   fail "Instálala con SideStore desde la Release de GitHub (plan 6.2), y comprueba"
   fail "que la FIRMA NO HA CADUCADO: con Apple ID gratuito dura 7 días."
@@ -89,7 +101,12 @@ fi
 
 # ------------------------------------------------------------------ 4. lanzar
 say "4/7 · Lanzando la app"
-if ! pymobiledevice3 developer dvt launch "$BUNDLE" >"$RUN_DIR/launch.txt" 2>&1; then
+# iOS 17+: los servicios de desarrollador van por un túnel. `--userspace` lo monta en
+# el propio proceso, sin root ni `remote tunneld` (que en Bazzite no encuentra el
+# iPhone). --kill-existing: la app lee run.json AL ARRANCAR, así que si ya estaba
+# abierta hay que relanzarla.
+pymobiledevice3 mounter auto-mount --userspace >"$RUN_DIR/mount.txt" 2>&1 || true
+if ! pymobiledevice3 developer dvt launch --userspace --kill-existing "$BUNDLE" >"$RUN_DIR/launch.txt" 2>&1; then
   warn "dvt launch falló. Modo degradado: ABRE LA APP A MANO en el teléfono."
   warn "El resto del bucle funciona igual — el disparo es un fichero, no un argumento."
   warn "Detalle en $RUN_DIR/launch.txt"

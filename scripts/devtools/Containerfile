@@ -1,0 +1,4 @@
+# pymobiledevice3 no compila con pip --user en Bazzite (faltan cabeceras de C para
+# lzfse/pylzss). Se usa desde este contenedor. Ver scripts/pmd3.
+FROM docker.io/library/python:3.12
+RUN pip install --no-cache-dir pymobiledevice3
